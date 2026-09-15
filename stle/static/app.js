@@ -543,16 +543,16 @@ function hDom(ink, hl, vl, w, h, horiz) {
 // ---------------------------------------------------------------------------
 // Mend the scan before any line is read.
 //
-// A printed rule reaches the page as several pieces: the F-28 title block's
-// y=298 rule arrives in five, split by holes of one and two pixels where the
-// toner simply did not take. Those are defects in the paper, not structure, and
-// every later stage — merging, crossing, spanning — treats each piece as its own
-// short line and throws it away.
+// A printed rule reaches the page as several pieces. On one scanned title block
+// a single horizontal rule arrived in five, split by holes of one and two pixels
+// where the toner simply did not take. Those are defects in the paper, not
+// structure, and every later stage — merging, crossing, spanning — treats each
+// piece as its own short line and throws it away.
 //
 // A morphological close along ONE axis bridges a gap in a line without fattening
 // it, so the two axes are closed separately and unioned. Text barely moves: the
 // gaps inside a letter are two-dimensional and survive a purely horizontal or
-// purely vertical close (measured on BRACKET: 577 ink px becomes 599).
+// purely vertical close (measured on a word of body text: 577 ink px → 599).
 //
 // Width is in pixels of the working raster because a scan defect is physical —
 // a toner void is the same size whether the table is large or small — but it is
@@ -671,7 +671,7 @@ function analyse(b, k) {
   // Connected paths. Treat every surviving line as a node and every 90° crossing
   // as an edge, then keep only the component the outer border belongs to — the
   // largest by bounding box. Anything floating inside a cell, with no path out to
-  // the frame, is not part of the table. (Measured on the manual's title block:
+  // the frame, is not part of the table. (Measured on one scanned title block:
   // 27 components collapse to 1, dropping 26 fragments.)
   const all = [...hSpan.map(l => ({ ...l, horiz: true })),
                ...vSpan.map(l => ({ ...l, horiz: false }))];
@@ -704,7 +704,7 @@ function analyse(b, k) {
 
   // Clustering has one job: merge the two edges of a single thick rule into one
   // lattice coordinate. So the tolerance is the thickest rule actually found —
-  // read off the data, not chosen. (7px on the F-28 title block, 16px here.)
+  // read off the data, not chosen. (7px on one scan, 16px on another.)
   const ruleThick = Math.max(1,
     ...hConn.map(l => l.y1 - l.y0), ...vConn.map(l => l.x1 - l.x0));
   const table = buildTable(hConn, vConn, frame, ruleThick);
