@@ -1,0 +1,12 @@
+# Four packages, all infrastructure. None of them do any detection — that runs
+# in the browser, in stle/static/app.js.
+#
+#   python -m venv .venv && .venv/bin/pip install -r requirements.txt
+
+fastapi==0.141.1
+uvicorn[standard]==0.52.4   # [standard] brings watchfiles, which --reload needs
+python-multipart==0.0.32    # required by FastAPI for the PDF upload form field
+
+# Page rasterisation. Note: PyMuPDF is AGPL-3.0 (or commercial from Artifex).
+# See the licence section of the README.
+pymupdf==1.28.2
