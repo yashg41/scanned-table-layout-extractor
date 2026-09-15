@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Scanned table layout extractor</title>
+<style>
+  * { box-sizing:border-box; }
+  body { margin:0; background:#2b2d33; color:#e6e6e6;
+         font:13px/1.4 -apple-system,"Segoe UI",Helvetica,Arial,sans-serif; }
+  .bar { position:sticky; top:0; z-index:5; display:flex; gap:10px; align-items:center;
+         background:#23252b; border-bottom:1px solid #000; padding:10px 14px; flex-wrap:wrap; }
+  .bar select, .bar button { background:#3a3d44; color:#eee; border:1px solid #555;
+                border-radius:4px; padding:4px 8px; font-size:12px; cursor:pointer; }
+  .bar #docSel { max-width:clamp(10rem, 24vw, 22rem); }
+  #status { color:#8a8f99; font:11px monospace; }
+  .ck { display:flex; gap:5px; align-items:center; font-size:12px; color:#ccc; }
+  .ck input[type=number] { width:4.5rem; background:#3a3d44; color:#eee;
+         border:1px solid #555; border-radius:3px; padding:2px 4px; font:11px monospace; }
+  .sep { width:1px; align-self:stretch; background:#3a3d44; }
+
+  /* ---- first run ---- */
+  #empty { padding:clamp(1.5rem, 6vh, 4rem); }
+  .drop { max-width:44rem; margin:0 auto; border:2px dashed #4a4f5a; border-radius:10px;
+          padding:clamp(1.5rem, 5vh, 3rem); text-align:center; background:#252830; }
+  .drop h1 { margin:0 0 .5rem; font-size:1.3rem; font-weight:600; }
+  .drop p { margin:.4rem 0; color:#9aa0ab; }
+  .drop label { display:inline-block; margin-top:1rem; background:#3f6fd8; color:#fff;
+          border-radius:5px; padding:.5rem 1.1rem; cursor:pointer; font-size:.9rem; }
+  .drop input[type=file] { display:none; }
+  body.dragging .drop { border-color:#9fb4ff; background:#2b3140; }
+
+  /* ---- page picker ---- */
+  #picker { padding:14px; border-bottom:1px solid #1c1e23; }
+  #stage { position:relative; display:inline-block; line-height:0;
+           box-shadow:0 2px 14px rgba(0,0,0,.5); }
+  #page { display:block; max-width:100%; background:#fff; }
+  #drawLayer { position:absolute; inset:0; cursor:crosshair; touch-action:none; }
+  #rubber { position:absolute; border:1.5px dashed #ff5ba0;
+            background:rgba(230,30,160,.10); pointer-events:none; }
+  #rubber .rlabel { position:absolute; right:0; top:100%; margin-top:3px; white-space:nowrap;
+            background:#ff5ba0; color:#1a1a1a; font:10px/1.5 ui-monospace,monospace;
+            padding:1px 5px; border-radius:3px; }
+  .pickhint { color:#8a8f99; font:11px monospace; margin:8px 0 0; }
+
+  main { padding:16px; display:flex; flex-wrap:wrap; gap:16px; align-items:flex-start; }
+  .empty-note { color:#8a8f99; padding:1.5rem .2rem; }
+
+  .card { background:#23252b; border:1px solid #3a3d44; border-radius:6px; padding:10px;
+          width:clamp(15rem, 20vw, 19rem); }
+  .card .lbl { font:11px monospace; color:#9fb4ff; margin-bottom:6px; }
+  .thumb { background:#fff; border-radius:3px; overflow:hidden; cursor:zoom-in; height:11rem;
+           display:flex; align-items:center; justify-content:center; }
+  .thumb canvas { max-width:100%; max-height:11rem; display:block; }
+  .thumb:hover { outline:2px solid #9fb4ff; }
+  .dims { display:grid; grid-template-columns:auto 1fr; gap:1px 8px; margin:8px 0 0;
+          font:10.5px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace; }
+  .dims dt { color:#8a8f99; text-align:right; margin:0; }
+  .dims dd { color:#ffd479; margin:0; }
+  .hintline { font:10px monospace; color:#6c7280; margin-top:6px; }
+  .arrow { align-self:center; display:flex; flex-direction:column; align-items:center;
+           gap:2px; flex:none; padding-top:2.5rem; }
+  .arrow .ar { color:#5a6070; font-size:1.25rem; line-height:1; }
+  .arrow .al { color:#6c7280; font:9.5px monospace; max-width:5rem; text-align:center; }
+  .fork { flex-basis:100%; height:0; margin:6px 0 2px; position:relative; }
+  .fork .fl { color:#9fb4ff; font:11px monospace; border-top:1px solid #3a3d44;
+              padding-top:8px; }
+
+  /* full-size viewer */
+  #zoom[hidden] { display:none !important; }
+  #zoom { position:fixed; inset:0; z-index:50; background:rgba(0,0,0,.86);
+          display:flex; flex-direction:column; }
+  #zhead { display:flex; gap:10px; align-items:center; padding:10px 14px;
+           background:#1e2025; border-bottom:1px solid #3a3d44; flex-wrap:wrap; }
+  #zhead b { font:12px monospace; color:#ffd479; font-weight:normal; }
+  #zhead .sp { flex:1; }
+  #zhead button { background:#3a3d44; color:#eee; border:1px solid #555;
+                  border-radius:4px; padding:3px 9px; font-size:12px; cursor:pointer; }
+  #zbody { flex:1; overflow:auto; padding:16px; display:flex; justify-content:center;
+           align-items:flex-start; }
+  #zbody canvas { background:#fff; box-shadow:0 2px 18px rgba(0,0,0,.6); display:block; }
+</style></head>
+<body>
+  <div id="empty" hidden>
+    <div class="drop">
+      <h1>Scanned table layout extractor</h1>
+      <p>Drop a PDF here, or choose one. Then drag a rectangle around a table
+         and watch the layout come back out of the pixels.</p>
+      <p>Nothing leaves your machine. Files are stored beside the app, in <code>uploads/</code>.</p>
+      <label>Choose a PDF<input type="file" id="file" accept="application/pdf,.pdf" multiple></label>
+    </div>
+  </div>
+
+  <div id="work" hidden>
+    <div class="bar">
+      <select id="docSel"></select>
+      <select id="pageSel"></select>
+      <label class="ck" title="add another PDF" style="cursor:pointer">
+        <span style="background:#3a3d44;border:1px solid #555;border-radius:4px;padding:4px 8px">+ PDF</span>
+        <input type="file" id="file2" accept="application/pdf,.pdf" multiple hidden>
+      </label>
+      <button id="delDoc" title="remove this document from the library">remove</button>
+      <span class="sep"></span>
+
+      <select id="dpi" title="render resolution">
+        <option value="87">87 dpi</option>
+        <option value="110">110 dpi</option>
+        <option value="150" selected>150 dpi</option>
+        <option value="200">200 dpi</option>
+        <option value="300">300 dpi</option>
+        <option value="400">400 dpi</option>
+      </select>
+      <select id="unit" title="physical units">
+        <option value="mm" selected>mm</option>
+        <option value="cm">cm</option>
+        <option value="in">inches</option>
+        <option value="pt">points</option>
+      </select>
+
+      <span class="sep"></span>
+      <label class="ck" title="the box, in raster pixels">box
+        <input type="number" id="fx0"><input type="number" id="fy0">
+        <input type="number" id="fx1"><input type="number" id="fy1">
+      </label>
+      <button id="clearBox">clear</button>
+
+      <span class="sep"></span>
+      <label class="ck"><input type="checkbox" id="upscale" checked> enlarge tables under 40% of page</label>
+      <label class="ck" title="grey level that counts as ink">cut
+        <input type="range" id="cut" min="60" max="240" value="190" step="5" style="width:5.5rem">
+        <span id="cutOut">190</span>
+      </label>
+      <label class="ck" title="bridge breaks in a rule up to this many px wide; 0 disables">mend
+        <input type="range" id="mend" min="0" max="15" value="5" step="1" style="width:4.5rem">
+        <span id="mendOut">5 px</span>
+      </label>
+      <label class="ck" title="a crossing only counts if the other line is at least this long, as % of the table">cross ≥
+        <input type="range" id="crossMin" min="0.5" max="30" value="5" step="0.5" style="width:5rem">
+        <span id="crossMinOut">5%</span>
+      </label>
+      <label class="ck" title="how many distinct crossings a line needs to count as structural">×
+        <input type="range" id="crossN" min="1" max="6" value="1" step="1" style="width:3.5rem">
+        <span id="crossNOut">1</span>
+      </label>
+      <span id="status"></span>
+    </div>
+
+    <div id="picker">
+      <div id="stage">
+        <canvas id="page"></canvas>
+        <div id="drawLayer"></div>
+        <div id="rubber" hidden><span class="rlabel"></span></div>
+      </div>
+      <p class="pickhint">Drag to mark a table. Arrow keys nudge the box, Alt+arrow resizes it, Shift for ten pixels.</p>
+    </div>
+
+    <main id="out"></main>
+  </div>
+
+  <div id="zoom" hidden>
+    <div id="zhead">
+      <b id="ztitle"></b>
+      <span class="sp"></span>
+      <button id="zout">−</button>
+      <button id="zfit">fit</button>
+      <button id="z100">100%</button>
+      <button id="zin">+</button>
+      <b id="zpct">100%</b>
+      <button id="zclose">close</button>
+    </div>
+    <div id="zbody"></div>
+  </div>
+<script src="/static/app.js"></script>
+</body></html>
