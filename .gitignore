@@ -1,0 +1,21 @@
+# Uploaded documents. The server creates this on demand; nothing in it is ours
+# to publish. Never commit a PDF or a rendered page to this repo.
+uploads/
+*.pdf
+*.png
+
+# Secrets
+.env
+.env.*
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+
+# Editors and OS
+.DS_Store
+.idea/
+.vscode/
