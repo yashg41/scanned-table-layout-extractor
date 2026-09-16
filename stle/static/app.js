@@ -767,10 +767,6 @@ async function buildCards(out, note, stale) {
     gt
       ? [['lattice', `${gt.cols} columns × ${gt.rows} rows, from the junction coordinates`],
          ['walls', `${gt.wallSpans} lattice spans carry a verified edge`],
-         ['unreal units', `${gt.unreal} of ${gt.rows * gt.cols} lattice units have no ` +
-           'junction at a corner — the grid crosses every column line with every row ' +
-           'line, so it invents intersections the paper never had. Those are excluded ' +
-           'rather than flooded into phantom empty cells.'],
          ['cells', `${gt.cells.length}`],
          ['merged', `${gt.spans} span more than one unit`],
          ['content', `${gt.cells.filter(c => c.filled).length} filled, ${gt.cells.filter(c => !c.filled).length} empty`],
@@ -2600,49 +2596,22 @@ function tableFromGraph(a, reach) {
   });
   const ixs = inkAt(xs, 'x', 'gx'), iys = inkAt(ys, 'y', 'gy');
 
-  // Which lattice units are real.
-  //
-  // The lattice is every column line crossed with every row line, so it
-  // manufactures intersections no junction ever occupied: a table whose header
-  // row starts one column in still gets a line to its left (from the border
-  // lower down) and a line across its top (from the header rules further
-  // right), and their crossing is a point that is not on the paper.
-  //
-  // The flood cannot see that. It knows only walls, and an empty region has no
-  // walls, so the absence of structure reads as open interior and the region
-  // becomes a cell — the phantom empty cell down the left of such a table.
-  //
-  // Straightening may MOVE a junction a few px onto its rule's line, because
-  // that corrects a measurement of something real. Inventing an intersection is
-  // different in kind, so a unit counts only when all four of its lattice
-  // corners are junctions that were actually measured. A merged cell is
-  // unaffected: the flood joins units after this test, and a merge's outer
-  // corners are real even where the interior ones are not.
-  const junctionAt = new Set();
-  G.pts.forEach((p, i) => { if (G.inMain.has(i)) junctionAt.add(`${p.gx},${p.gy}`); });
-  const corner = (c, r) => junctionAt.has(`${xs[c]},${ys[r]}`);
-  const real = Array.from({ length: ny }, (_, i) =>
-    Array.from({ length: nx }, (_, j) =>
-      corner(j, i) && corner(j + 1, i) && corner(j, i + 1) && corner(j + 1, i + 1)));
-  const unreal = real.reduce((n, row) => n + row.filter(v => !v).length, 0);
-
   // flood the open interior: a flood cannot cross a wall, so it stops at the
   // cell boundaries and a merged cell comes out as one region
   const lab = Array.from({ length: ny }, () => new Array(nx).fill(-1));
   const cells = [];
   for (let i = 0; i < ny; i++) {
     for (let j = 0; j < nx; j++) {
-      if (lab[i][j] >= 0 || !real[i][j]) continue;
+      if (lab[i][j] >= 0) continue;
       const n = cells.length, stack = [[i, j]], mem = [];
       lab[i][j] = n;
-      const open = (r, c) => r >= 0 && c >= 0 && r < ny && c < nx && real[r][c] && lab[r][c] < 0;
       while (stack.length) {
         const [r, c] = stack.pop();
         mem.push([r, c]);
-        if (!vwall[r][c + 1] && open(r, c + 1)) { lab[r][c + 1] = n; stack.push([r, c + 1]); }
-        if (!vwall[r][c] && open(r, c - 1)) { lab[r][c - 1] = n; stack.push([r, c - 1]); }
-        if (!hwall[r + 1][c] && open(r + 1, c)) { lab[r + 1][c] = n; stack.push([r + 1, c]); }
-        if (!hwall[r][c] && open(r - 1, c)) { lab[r - 1][c] = n; stack.push([r - 1, c]); }
+        if (c + 1 < nx && !vwall[r][c + 1] && lab[r][c + 1] < 0) { lab[r][c + 1] = n; stack.push([r, c + 1]); }
+        if (c - 1 >= 0 && !vwall[r][c] && lab[r][c - 1] < 0) { lab[r][c - 1] = n; stack.push([r, c - 1]); }
+        if (r + 1 < ny && !hwall[r + 1][c] && lab[r + 1][c] < 0) { lab[r + 1][c] = n; stack.push([r + 1, c]); }
+        if (r - 1 >= 0 && !hwall[r][c] && lab[r - 1][c] < 0) { lab[r - 1][c] = n; stack.push([r - 1, c]); }
       }
       const r0 = Math.min(...mem.map(m => m[0])), r1 = Math.max(...mem.map(m => m[0]));
       const c0 = Math.min(...mem.map(m => m[1])), c1 = Math.max(...mem.map(m => m[1]));
@@ -2663,7 +2632,7 @@ function tableFromGraph(a, reach) {
     xs, ys, ixs, iys, rows: ny, cols: nx, cells,
     spans: cells.filter(c => c.rowspan > 1 || c.colspan > 1).length,
     ragged: cells.filter(c => !c.rect).length,
-    wallSpans: used, unreal,
+    wallSpans: used,
   };
   fillCells(table, a.ink, a.w, a.h);
   return { G, table };
