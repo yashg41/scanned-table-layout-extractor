@@ -118,10 +118,28 @@ def health() -> dict:
 
 @app.get("/")
 def index() -> FileResponse:
-    return FileResponse(STATIC / "index.html")
+    return FileResponse(
+        STATIC / "index.html", headers={"Cache-Control": "no-cache"}
+    )
 
 
-app.mount("/static", StaticFiles(directory=STATIC), name="static")
+class NoCacheStatic(StaticFiles):
+    """Serve app.js/index.html with `no-cache`.
+
+    Without the header the browser invents a freshness lifetime and keeps
+    serving an old app.js after an edit — the fix looks like it did not take.
+    `no-cache` does not mean "do not cache": with the ETag StaticFiles already
+    sends, a revalidation is a 304, so it costs one conditional request rather
+    than a re-download.
+    """
+
+    def file_response(self, *args, **kwargs) -> Response:
+        r = super().file_response(*args, **kwargs)
+        r.headers["Cache-Control"] = "no-cache"
+        return r
+
+
+app.mount("/static", NoCacheStatic(directory=STATIC), name="static")
 
 
 @app.exception_handler(HTTPException)

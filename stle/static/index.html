@@ -27,11 +27,16 @@
   .drop input[type=file] { display:none; }
   body.dragging .drop { border-color:#9fb4ff; background:#2b3140; }
 
-  /* ---- page picker ---- */
+  /* ---- page picker ----
+     #scroll is the viewport: it is capped at a fraction of the window so a page
+     zoomed past "fit" scrolls inside it instead of pushing the pipeline off the
+     bottom. #stage is sized by the canvas, which app.js scales. */
   #picker { padding:14px; border-bottom:1px solid #1c1e23; }
+  #scroll { max-height:72vh; overflow:auto; background:#1e2025; border-radius:4px;
+            padding:10px; }
   #stage { position:relative; display:inline-block; line-height:0;
            box-shadow:0 2px 14px rgba(0,0,0,.5); }
-  #page { display:block; max-width:100%; background:#fff; }
+  #page { display:block; background:#fff; }
   #drawLayer { position:absolute; inset:0; cursor:crosshair; touch-action:none; }
   #rubber { position:absolute; border:1.5px dashed #ff5ba0;
             background:rgba(230,30,160,.10); pointer-events:none; }
@@ -42,6 +47,34 @@
 
   main { padding:16px; display:flex; flex-wrap:wrap; gap:16px; align-items:flex-start; }
   .empty-note { color:#8a8f99; padding:1.5rem .2rem; }
+
+  /* ---- busy indicator ----
+     The pipeline blocks the main thread, so this has to be on screen BEFORE the
+     work starts; app.js yields a frame to let it paint. */
+  .spin { width:1em; height:1em; flex:none; border-radius:50%;
+          border:2px solid rgba(159,180,255,.25); border-top-color:#9fb4ff;
+          animation:spin .7s linear infinite; }
+  @keyframes spin { to { transform:rotate(360deg); } }
+  @media (prefers-reduced-motion:reduce) { .spin { animation-duration:2.4s; } }
+
+  /* in the toolbar, beside the status text */
+  #busy { display:flex; gap:6px; align-items:center; color:#9fb4ff;
+          font:11px monospace; }
+  #busy[hidden] { display:none; }
+
+  /* the working note that stands in for the cards while they are built */
+  .working { display:flex; gap:.6rem; align-items:center; color:#9fb4ff;
+             font:12px monospace; padding:1.5rem .2rem; }
+  .working .spin { font-size:1.1rem; }
+  .working .sub { color:#6c7280; }
+
+  /* a card whose thumbnail has not been drawn yet */
+  .thumb.pending { position:relative; }
+  .thumb.pending::after { content:""; position:absolute; inset:0;
+          background:repeating-linear-gradient(45deg,#f4f5f7 0 .6rem,#eceef2 .6rem 1.2rem); }
+
+  /* the page picker, while a page image loads */
+  #picker.busy #scroll { opacity:.55; transition:opacity .15s; }
 
   .card { background:#23252b; border:1px solid #3a3d44; border-radius:6px; padding:10px;
           width:clamp(15rem, 20vw, 19rem); }
@@ -55,6 +88,21 @@
   .dims dt { color:#8a8f99; text-align:right; margin:0; }
   .dims dd { color:#ffd479; margin:0; }
   .hintline { font:10px monospace; color:#6c7280; margin-top:6px; }
+
+  /* the clickable list of merges under a card */
+  .picklist { margin-top:8px; max-height:13rem; overflow:auto;
+              border:1px solid #33363d; border-radius:4px; background:#1e2025; }
+  .pick { display:flex; gap:6px; align-items:center; width:100%; text-align:left;
+          background:none; border:0; border-bottom:1px solid #26282e; color:#c8ccd4;
+          padding:3px 6px; cursor:pointer;
+          font:10.5px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace; }
+  .pick:last-child { border-bottom:0; }
+  .pick:hover { background:#2a2d34; }
+  .pick.on { background:#3a4258; color:#fff; }
+  .pick .sw { width:.7rem; height:.7rem; flex:none; border-radius:2px; }
+  .pick .pl { flex:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .pick .pn { color:#ffd479; flex:none; }
+  .pick.on .pn { color:#ffe9a8; }
   .arrow { align-self:center; display:flex; flex-direction:column; align-items:center;
            gap:2px; flex:none; padding-top:2.5rem; }
   .arrow .ar { color:#5a6070; font-size:1.25rem; line-height:1; }
@@ -73,9 +121,76 @@
   #zhead .sp { flex:1; }
   #zhead button { background:#3a3d44; color:#eee; border:1px solid #555;
                   border-radius:4px; padding:3px 9px; font-size:12px; cursor:pointer; }
-  #zbody { flex:1; overflow:auto; padding:16px; display:flex; justify-content:center;
-           align-items:flex-start; }
-  #zbody canvas { background:#fff; box-shadow:0 2px 18px rgba(0,0,0,.6); display:block; }
+  .zhint { color:#6c7280; font:10px monospace; }
+  @media (max-width:52rem) { .zhint { display:none; } }
+  /* live cursor position, in the coordinates the pipeline uses */
+  #zat { color:#7ee2a8; font:12px monospace; font-weight:normal;
+         min-width:11ch; }
+  #zat:empty { min-width:0; }
+  #zwrap { flex:1; min-height:0; display:flex; align-items:stretch; }
+  /* No flex centring here: when the canvas is wider than the box, flex pushes
+     the overflow out BOTH sides and the scrollbars cannot reach it. A plain
+     scroll container with an inline-block child overflows to the right/bottom
+     only, which is what can actually be scrolled and dragged. */
+  #zbody { flex:1; min-width:0; overflow:auto; padding:16px;
+           cursor:grab; overscroll-behavior:contain; }
+  #zbody.drag { cursor:grabbing; }
+  #zpad { display:inline-block; min-width:100%; text-align:center; }
+  #zbody canvas { background:#fff; box-shadow:0 2px 18px rgba(0,0,0,.6);
+                  display:block; margin:0 auto; }
+
+  /* the numbers behind the picture, beside it rather than crushed into the title */
+  /* min-height:0 is what makes this scroll. It is a grid, so its intrinsic
+     height is the sum of its rows; as a flex item that height wins by default
+     and the panel grows past the window instead of overflowing, so overflow:auto
+     never engages. Allowing it to shrink below its content is the fix. */
+  #zstats { flex:none; width:clamp(14rem, 22vw, 20rem); margin:0;
+            min-height:0; max-height:100%; overflow-y:auto; overflow-x:hidden;
+            overscroll-behavior:contain;
+            padding:14px 16px; background:#1e2025; border-left:1px solid #3a3d44;
+            display:grid; grid-template-columns:auto 1fr; gap:3px 10px;
+            align-content:start;
+            font:11px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace; }
+  #zstats dt { color:#8a8f99; text-align:right; margin:0; white-space:nowrap; }
+  #zstats dd { color:#ffd479; margin:0; overflow-wrap:anywhere; }
+  #zstats:empty { display:none; }
+  /* the picker lives in the same grid, so it has to span both columns */
+  #zstats .zpickhead, #zstats .picklist,
+  #zstats .zsec, #zstats .ztabwrap { grid-column:1 / -1; }
+  #zstats .zpickhead { color:#9fb4ff; margin:10px 0 4px;
+                       border-top:1px solid #3a3d44; padding-top:9px; }
+  /* Inside the rail these flow with it rather than scrolling on their own:
+     nested scroll boxes mean the wheel stops at the wrong edge and the panel
+     has to be scrolled in two places. The rail is the single scroller. */
+  #zstats .picklist { max-height:none; overflow:visible; border-radius:4px; }
+  #zstats .ztabwrap { max-height:none; overflow:visible; }
+  #zstats .ztab th { top:-14px; }   /* sticky against the rail's own padding */
+  #zstats .zsec { color:#9fb4ff; margin:9px 0 2px; padding-top:7px;
+                  border-top:1px solid #3a3d44; }
+
+  /* the full run table: every raw run of the selected group */
+  .ztabwrap { max-height:22rem; overflow:auto; margin:2px 0 4px;
+              border:1px solid #33363d; border-radius:4px; }
+  .ztab { border-collapse:collapse; width:100%;
+          font:10px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace; }
+  .ztab th { position:sticky; top:0; background:#2a2d34; color:#9fb4ff;
+             text-align:right; padding:3px 5px; white-space:nowrap;
+             border-bottom:1px solid #3a3d44; font-weight:normal; }
+  .ztab td { text-align:right; padding:2px 5px; color:#c8ccd4;
+             border-bottom:1px solid #26282e; white-space:nowrap; }
+  .ztab tr.seed td { color:#7ee2a8; }
+  .ztab td.tight { color:#ff8a65; font-weight:600; }
+  .ztab tr:hover td { background:#2a2d34; }
+
+  /* on a narrow window the rail would squeeze the image, so stack instead.
+     Stacked it is capped at a share of the window and scrolls within that,
+     rather than taking its height from the (very tall) content. */
+  @media (max-width:52rem) {
+    #zwrap { flex-direction:column; }
+    #zstats { width:auto; border-left:none; border-top:1px solid #3a3d44;
+              max-height:45vh; flex:0 0 auto; }
+    #zbody { min-height:0; }
+  }
 </style></head>
 <body>
   <div id="empty" hidden>
@@ -115,6 +230,15 @@
       </select>
 
       <span class="sep"></span>
+      <label class="ck" title="how large the page is drawn; the box is always recorded in raster pixels">page
+        <button id="pzOut" title="zoom out">−</button>
+        <button id="pzFit" title="fit the whole page in the window">fit</button>
+        <button id="pz100" title="one raster pixel per screen pixel">100%</button>
+        <button id="pzIn" title="zoom in">+</button>
+        <span id="pzPct">fit</span>
+      </label>
+
+      <span class="sep"></span>
       <label class="ck" title="the box, in raster pixels">box
         <input type="number" id="fx0"><input type="number" id="fy0">
         <input type="number" id="fx1"><input type="number" id="fy1">
@@ -123,32 +247,43 @@
 
       <span class="sep"></span>
       <label class="ck"><input type="checkbox" id="upscale" checked> enlarge tables under 40% of page</label>
-      <label class="ck" title="grey level that counts as ink">cut
+      <label class="ck" title="strengthen the ink before the threshold; every pixel moves toward black, none toward white. 1.0 leaves the scan alone">darken
+        <input type="range" id="dark" min="1" max="4" value="1.6" step="0.1" style="width:5rem">
+        <span id="darkOut">×1.6</span>
+      </label>
+      <label class="ck" title="grey level that counts as ink, applied AFTER the darken">cut
         <input type="range" id="cut" min="60" max="240" value="190" step="5" style="width:5.5rem">
         <span id="cutOut">190</span>
       </label>
-      <label class="ck" title="bridge breaks in a rule up to this many px wide; 0 disables">mend
-        <input type="range" id="mend" min="0" max="15" value="5" step="1" style="width:4.5rem">
-        <span id="mendOut">5 px</span>
+      <label class="ck" title="divide out a printed ground — a guilloche mesh, watermark or tinted crest — before the threshold. Off for a plain scan: there is nothing to remove and it costs a blur">
+        <input type="checkbox" id="groundOn"> remove background
       </label>
-      <label class="ck" title="a crossing only counts if the other line is at least this long, as % of the table">cross ≥
-        <input type="range" id="crossMin" min="0.5" max="30" value="5" step="0.5" style="width:5rem">
-        <span id="crossMinOut">5%</span>
+      <label class="ck" title="how much of the crop one tone band must cover before it counts as a ground rather than as content. Lower removes more">ground ≥
+        <input type="range" id="ground" min="2" max="40" value="8" step="1" style="width:4.5rem">
+        <span id="groundOut">8%</span>
+      </label>
+      <label class="ck" title="bridge breaks in a rule up to this wide, as % of the crop; 0 disables">mend
+        <input type="range" id="mend" min="0" max="3" value="0.1" step="0.05" style="width:4.5rem">
+        <span id="mendOut">0.1%</span>
       </label>
       <label class="ck" title="how many distinct crossings a line needs to count as structural">×
         <input type="range" id="crossN" min="1" max="6" value="1" step="1" style="width:3.5rem">
         <span id="crossNOut">1</span>
       </label>
+      <span id="busy" hidden><span class="spin"></span><span id="busyMsg">working…</span></span>
       <span id="status"></span>
     </div>
 
     <div id="picker">
-      <div id="stage">
-        <canvas id="page"></canvas>
-        <div id="drawLayer"></div>
-        <div id="rubber" hidden><span class="rlabel"></span></div>
+      <div id="scroll">
+        <div id="stage">
+          <canvas id="page"></canvas>
+          <div id="drawLayer"></div>
+          <div id="rubber" hidden><span class="rlabel"></span></div>
+        </div>
       </div>
-      <p class="pickhint">Drag to mark a table. Arrow keys nudge the box, Alt+arrow resizes it, Shift for ten pixels.</p>
+      <p class="pickhint">Drag to mark a table. Arrow keys nudge the box, Alt+arrow resizes it, Shift for ten pixels.
+         Ctrl/⌘ + scroll zooms the page; +/− and 0 (fit) work from the keyboard.</p>
     </div>
 
     <main id="out"></main>
@@ -163,9 +298,14 @@
       <button id="z100">100%</button>
       <button id="zin">+</button>
       <b id="zpct">100%</b>
+      <b id="zat"></b>
+      <span class="zhint">drag to pan · ⌘/ctrl+scroll to zoom</span>
       <button id="zclose">close</button>
     </div>
-    <div id="zbody"></div>
+    <div id="zwrap">
+      <div id="zbody"></div>
+      <dl id="zstats"></dl>
+    </div>
   </div>
 <script src="/static/app.js"></script>
 </body></html>

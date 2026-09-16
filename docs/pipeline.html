@@ -1,0 +1,798 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Table line extraction — pipeline</title>
+<style>
+  :root {
+    --bg: #fbfaf8;      --panel: #fff;      --ink: #1a1a1a;
+    --dim: #6b6b6b;     --line: #e0ddd8;    --rule: #cfcbc4;
+    --h: #c8322a;       --v: #2f5fd0;       --amber: #e0900a;
+    --good: #2e7d4f;    --drop: #9a9a9a;    --code: #f4f2ee;
+    --mark: #fff6d8;
+    --gap: clamp(0.8rem, 1.6vw, 1.5rem);
+    --pad: clamp(0.9rem, 1.8vw, 1.6rem);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #17181a;    --panel: #1f2124;   --ink: #e8e6e3;
+      --dim: #9b9894;   --line: #33363a;    --rule: #45484d;
+      --h: #ef6a60;     --v: #7fa6f5;       --amber: #f0b64a;
+      --good: #5cbb85;  --drop: #6e7175;    --code: #26282c;
+      --mark: #3a3520;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #17181a;      --panel: #1f2124;   --ink: #e8e6e3;
+    --dim: #9b9894;     --line: #33363a;    --rule: #45484d;
+    --h: #ef6a60;       --v: #7fa6f5;       --amber: #f0b64a;
+    --good: #5cbb85;    --drop: #6e7175;    --code: #26282c;
+    --mark: #3a3520;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 400 clamp(0.88rem, 1.05vw, 1rem)/1.55 ui-sans-serif, -apple-system,
+          "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    padding-block: clamp(1.5rem, 4vw, 3rem);
+    padding-inline: max(1rem, 4vw);
+  }
+  .wrap { max-width: 68rem; margin: 0 auto; }
+
+  h1 { font-size: clamp(1.4rem, 2.6vw, 2.1rem); margin: 0 0 .3em; letter-spacing: -.02em; }
+  .sub { color: var(--dim); margin: 0 0 2.5em; max-width: 46em; }
+  code, .mono {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: .88em;
+  }
+  code { background: var(--code); padding: .12em .38em; border-radius: .25em; }
+
+  /* ---- stage ---- */
+  .stage {
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: .7rem; padding: var(--pad);
+    display: grid; grid-template-columns: 2.4rem 1fr; gap: var(--gap);
+    align-items: start;
+  }
+  .stage.edit { border-color: var(--amber); box-shadow: 0 0 0 1px var(--amber); }
+  .num {
+    font-weight: 700; font-size: 1.05rem; color: var(--dim);
+    border-right: 1px solid var(--line); padding-right: .6rem; min-height: 1.6em;
+  }
+  .stage.edit .num { color: var(--amber); }
+  .ttl { font-weight: 650; font-size: 1.06em; margin: 0 0 .15em; }
+  .fn { color: var(--dim); font-size: .84em; margin-bottom: .7em; }
+  .body > p { margin: 0 0 .7em; }
+  .body > p:last-child { margin-bottom: 0; }
+
+  .tag {
+    display: inline-block; font-size: .7rem; font-weight: 700;
+    text-transform: uppercase; letter-spacing: .06em;
+    padding: .18em .5em; border-radius: .25em; vertical-align: .15em;
+    margin-left: .5em; background: var(--amber); color: #1a1a1a;
+  }
+  .tag.open { background: transparent; color: var(--dim); border: 1px solid var(--rule); }
+
+  /* ---- arrow between stages ---- */
+  .arrow { text-align: center; color: var(--dim); padding: .5rem 0; }
+  .arrow .g { font-size: 1.1rem; line-height: 1; color: var(--rule); }
+  .arrow .l { font-size: .82em; margin-top: .15em; }
+
+  /* ---- data carried ---- */
+  .carry {
+    margin-top: .8em; padding: .55em .75em; border-radius: .4em;
+    background: var(--code); font-size: .84em;
+  }
+  .carry b { color: var(--dim); font-weight: 600; }
+
+  /* ---- callouts ---- */
+  .note {
+    margin-top: .8em; padding: .6em .8em; border-left: 3px solid var(--rule);
+    background: var(--code); border-radius: 0 .35em .35em 0; font-size: .9em;
+  }
+  .note.warn { border-left-color: var(--amber); background: var(--mark); }
+  .note.why  { border-left-color: var(--good); }
+  .note b { display: block; margin-bottom: .2em; font-size: .93em; }
+
+  mark { background: var(--mark); color: inherit; padding: .05em .2em; border-radius: .2em; }
+  .h { color: var(--h); font-weight: 600; }
+  .v { color: var(--v); font-weight: 600; }
+  .del { color: var(--drop); text-decoration: line-through; }
+  .add { color: var(--good); font-weight: 600; }
+
+  /* ---- counts table ---- */
+  table.n { border-collapse: collapse; width: 100%; margin-top: .8em; font-size: .86em; }
+  table.n th, table.n td { text-align: left; padding: .3em .5em; border-bottom: 1px solid var(--line); }
+  table.n th { color: var(--dim); font-weight: 600; font-size: .92em; }
+  table.n td.r { text-align: right; font-family: ui-monospace, Menlo, monospace; }
+
+  /* ---- svg figures ---- */
+  figure { margin: .9em 0 0; }
+  figure svg { width: 100%; height: auto; display: block; border-radius: .4em; background: var(--code); }
+  figcaption { font-size: .82em; color: var(--dim); margin-top: .35em; }
+
+  .fork {
+    text-align: center; color: var(--dim); font-size: .85em;
+    padding: .6rem 0; border-top: 1px dashed var(--line); margin-top: 1.2rem;
+  }
+  .legend {
+    display: flex; flex-wrap: wrap; gap: .4rem 1.2rem;
+    font-size: .84em; color: var(--dim); margin: 1.5rem 0 0;
+    padding: .8rem; background: var(--panel); border: 1px solid var(--line);
+    border-radius: .5rem;
+  }
+  .legend span::before {
+    content: ""; display: inline-block; width: .8em; height: .8em;
+    border-radius: .15em; margin-right: .4em; vertical-align: -.05em;
+    background: currentColor;
+  }
+  footer { margin-top: 2.5rem; color: var(--dim); font-size: .85em; border-top: 1px solid var(--line); padding-top: 1rem; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>Table line extraction — what each stage does</h1>
+<p class="sub">
+  The pipeline in <code>analyse()</code>, stage by stage, with the reasoning behind each
+  test. Stages marked <span class="tag" style="margin-left:0">changed</span> were altered
+  in the current round. Counts are from one scanned title block
+  (<span class="mono">~1900×380</span> working px).
+</p>
+
+<!-- 0 -->
+<div class="stage edit">
+  <div class="num">0</div>
+  <div class="body">
+    <p class="ttl">Upload and render <span class="tag open">should change</span></p>
+    <p class="fn mono">store.py · get_pixmap(colorspace=…)</p>
+    <p>
+      The PDF is uploaded, each page rasterised once at the chosen dpi and cached as a PNG.
+      The user then draws a box on that render, and the box is what the pipeline below
+      receives.
+    </p>
+    <div class="note warn">
+      <b>Today: colour is discarded here, before anyone has seen the document</b>
+      The render is <code>colorspace=pymupdf.csGRAY</code>, so the cached PNG is
+      <b>colour type 0</b> — a single channel. Every later stage inherits that, and no
+      decision made downstream can get the colour back.
+      <br><br>
+      <mark>This is the earliest possible moment to throw information away, and the moment
+      with the least evidence available.</mark> Nothing at upload time knows whether the
+      document has a tinted ground, a coloured stamp, or a blue-ink signature.
+    </div>
+    <div class="note why">
+      <b>Should be: keep the upload as given, decide after the crop</b>
+      <table class="n">
+        <tr><th></th><th>today</th><th>proposed</th></tr>
+        <tr><td>stored render</td><td class="del">greyscale</td><td class="add">colour, as the PDF has it</td></tr>
+        <tr><td>user marks boxes on</td><td>the grey render</td><td class="add">the original page</td></tr>
+        <tr><td>collapse to grey</td><td class="del">at upload, fixed</td><td class="add">after the crop, chosen</td></tr>
+        <tr><td>reversible?</td><td class="del">no — colour is gone</td><td class="add">yes — colour is still on disk</td></tr>
+      </table>
+      The pipeline itself does not change: it still reads one channel. What changes is
+      <em>when</em> that channel is chosen, and that it can be chosen again without
+      re-uploading.
+      <br><br>
+      <b style="display:inline">Cost:</b> roughly 3× the page cache, and the tone stages
+      (<code>darkenValue</code>, <code>applyTone</code>, the threshold) each need to know which
+      channel they are reading.
+    </div>
+    <div class="carry"><b>carries →</b> the cached page raster, and the user's box</div>
+  </div>
+</div>
+
+<div class="arrow"><div class="g">↓</div><div class="l">crop to the box</div></div>
+
+<!-- 1 -->
+<div class="stage">
+  <div class="num">1</div>
+  <div class="body">
+    <p class="ttl">Crop and enlarge</p>
+    <p class="fn mono">enlargeFactor() · cropCanvas()</p>
+    <p>
+      The table's bounding box is cut from the rendered page. A table under
+      <b>40% of page area</b> is magnified toward a <b>1000 px</b> target width, capped at
+      <b>4×</b> — a small table is unreadable at natural size.
+    </p>
+    <div class="note why">
+      <b>Why area, not width</b>
+      A wide thin strip and a small square can share a width while occupying very
+      different amounts of the page.
+    </div>
+    <div class="carry"><b>carries →</b> <code>w</code>, <code>h</code> (post-enlargement), scale <code>k</code></div>
+  </div>
+</div>
+
+<div class="arrow"><div class="g">↓</div><div class="l">darken</div></div>
+
+<!-- 2 -->
+<div class="stage">
+  <div class="num">2</div>
+  <div class="body">
+    <p class="ttl">Darken — pull content away from the background</p>
+    <p class="fn mono">darkenValue(d[j], g) = 255 · (d[j]/255)<sup>g</sup></p>
+    <p>
+      A gamma curve, <code>g</code> from the <b>darken</b> slider (default <b>×1.6</b>).
+      It is a <em>relative</em> move: every pixel shifts by a proportion of where it already
+      sits, not by a fixed amount. <b>Monotonic</b> — no pixel ever gets lighter, black stays
+      black, white stays white, only the midtones move down.
+    </p>
+    <div class="note why">
+      <b>What this stage is really doing</b>
+      Together with <code>cut</code> it is the only place the pipeline <mark>separates
+      content from paper</mark>. Antialiasing leaves strokes averaging well above black, so a
+      faint rule can sit just above the cut and vanish entirely. Darkening widens the gap
+      between ink and background before the decision is made.
+    </div>
+    <div class="note warn">
+      <b>Colour is destroyed on upload, not here <span class="tag open">should change</span></b>
+      <code>store.py</code> renders every page
+      <code>colorspace=pymupdf.csGRAY</code> and caches a PNG that is
+      <b>colour type 0</b> — one greyscale channel, confirmed from the file header. So a cyan
+      guilloche is already grey before the browser sees it, and the page <em>looks</em> grey
+      because it <em>is</em>.
+      <br><br>
+      <b style="display:inline">That is why this code reads <code>d[j]</code>.</b> It is not a
+      choice of "the red channel": the canvas expands one grey byte into R=G=B, so
+      <code>d[j]</code> <em>is</em> the grey. <mark>There is no second channel to read and
+      nothing to convert.</mark>
+      <br><br>
+      <b style="display:inline">What should change:</b> keep the upload as the user gave it.
+      Render and store the page in <b>colour</b>, let the user draw boxes on the original, and
+      take the crop from that. Then the greyscale decision happens <em>after</em> the crop,
+      where there is evidence to base it on — and it becomes reversible, because the colour is
+      still on disk.
+    </div>
+
+    <div class="note warn">
+      <b>And there is no single right way to collapse colour <span class="tag open">open</span></b>
+      Which is the real argument for deciding late. Measured across the ink types these
+      documents actually contain, <mark>every fixed rule gets something wrong</mark>:
+      <table class="n">
+        <tr><th>mark</th><th class="r">R G B</th><th>red</th><th>luminance</th><th>max</th><th>wanted</th></tr>
+        <tr><td>cyan guilloche</td><td class="r">175 215 225</td><td class="del">ink</td><td class="add">paper</td><td class="add">paper</td><td>paper</td></tr>
+        <tr><td>black rule</td><td class="r">35 35 38</td><td class="add">ink</td><td class="add">ink</td><td class="add">ink</td><td>ink</td></tr>
+        <tr><td>red stamp</td><td class="r">150 30 35</td><td class="del">ink</td><td class="del">ink</td><td class="del">ink</td><td>paper</td></tr>
+        <tr><td>blue ink signature</td><td class="r">60 60 200</td><td class="add">ink</td><td class="add">ink</td><td class="del">paper</td><td>ink</td></tr>
+      </table>
+      <b><code>max</code></b> drops the guilloche but also drops a <em>blue signature</em>,
+      which is content. <b>Luminance</b> keeps the signature but keeps the stamp.
+      <b>Red</b> keeps the guilloche. No column is clean.
+      <br><br>
+      So the collapse is a <em>per-document</em> decision, and it belongs beside
+      <code>cut</code> and <code>darken</code> as a control — <span class="mono">grey ·
+      lightest · darkest · red / green / blue</span> — defaulting to luminance. That is only
+      possible if the crop still carries colour, which is the change above.
+    </div>
+
+    <div class="note why">
+      <b>And darken alone can never separate a ground</b>
+      The gamma is monotonic: it only moves values <em>down</em>. A ground already darker than
+      <code>cut</code> is pushed further in, never out. Raising <code>cut</code> does not help
+      either — it swallows faint rules first. Neither slider can do this job, which is what
+      justifies a separate step.
+    </div>
+
+    <div class="note warn">
+      <b>Step 2 is the hard part — no single property defines background</b>
+      It is tempting to say background is the coloured, or the lighter, or the ornate thing.
+      <mark>None of those generalise.</mark> For a tool that must take any document:
+      <table class="n">
+        <tr><th>guess</th><th>breaks on</th></tr>
+        <tr><td>background is <b>coloured</b></td><td>a neutral grey watermark; a black-printed guilloche</td></tr>
+        <tr><td>background is <b>lighter</b></td><td>a dark stamp; a faint pencil rule that <em>is</em> content</td></tr>
+        <tr><td>background is <b>curvy / ornate</b></td><td>straight-line and lattice meshes</td></tr>
+        <tr><td>background is <b>thinner</b></td><td>varies with scan dpi; a hairline rule is thinner still</td></tr>
+      </table>
+      Every one of these describes <em>these two documents</em> rather than documents in
+      general.
+    </div>
+
+    <div class="note why">
+      <b>What actually holds: background is a <em>ground</em>, content is a <em>mark</em></b>
+      Strip away tone, hue and shape and two properties survive, because they follow from what
+      a background <em>is for</em>:
+      <table class="n">
+        <tr><th>property</th><th>background</th><th>content</th></tr>
+        <tr><td><b>ubiquity</b> — where it occurs</td><td>everywhere, by design; it is a ground</td><td>only where there is something to say</td></tr>
+        <tr><td><b>uniformity</b> — how it varies</td><td>one ink, one pass: near-constant tone and stroke width</td><td>varies freely — rules, text, marks of every weight</td></tr>
+      </table>
+      Both are measurable without deciding anything about colour. Tile the crop and measure ink
+      coverage per tile:
+      <table class="n">
+        <tr><th>region</th><th class="r">tiles occupied</th><th class="r">mean</th><th class="r">std dev</th><th>reading</th></tr>
+        <tr><td>guilloche mesh</td><td class="r">16 / 16</td><td class="r">11.4%</td><td class="r">0.9</td><td class="add">a ground</td></tr>
+        <tr><td>table rules</td><td class="r">4 / 16</td><td class="r">10.3%</td><td class="r">17.9</td><td class="add">marks</td></tr>
+      </table>
+      <mark>Near-identical mean, utterly different distribution.</mark> Any measure that looks
+      only at how much ink there is will confuse these two; one that looks at how it is
+      <em>spread</em> will not.
+    </div>
+
+    <div class="note why">
+      <b>What is implemented — an opt-in ground removal <span class="tag">built</span></b>
+      A checkbox, <b>off by default</b>, plus a <code>ground ≥</code> share threshold. When on,
+      it builds a tone histogram of the crop and looks for a ground — <mark>a large population
+      at one tone</mark>, which is what one ink laid down in one pass produces. Content is a
+      small population spread over many tones.
+      <br><br>
+      <b style="display:inline">It searches only BELOW <code>cut</code>.</b> That is the whole
+      correction: a ground lighter than the threshold is <em>already</em> excluded from the
+      mask, so removing it would change nothing. Only a ground dark enough to become ink can do
+      damage, and that is the only band worth touching.
+      <table class="n">
+        <tr><th>case</th><th>fires?</th><th>ink before → after</th><th>rules kept</th></tr>
+        <tr><td>ground above <code>cut</code></td><td class="add">no</td><td class="r">2.00% → 2.00%</td><td class="add">yes</td></tr>
+        <tr><td>ground below <code>cut</code></td><td class="add">yes</td><td class="r">18.34% → 2.00%</td><td class="add">yes</td></tr>
+        <tr><td>dense wash below <code>cut</code></td><td class="add">yes</td><td class="r">34.66% → 2.00%</td><td class="add">yes</td></tr>
+        <tr><td>clean scan</td><td class="add">no</td><td class="r">2.00% → 2.00%</td><td class="add">yes</td></tr>
+        <tr><td>faint rules, no ground</td><td class="add">no</td><td class="r">2.00% → 2.00%</td><td class="add">yes</td></tr>
+      </table>
+      The last two are the guards that matter: it declines on a clean scan, and it does not eat
+      faint rules when they are the only ink on the page.
+    </div>
+
+    <div class="note warn">
+      <b>Measured on the real certificate: <em>nothing to remove</em> <span class="tag open">important</span></b>
+      Decoding the actual cached page (1205×1718) rather than a synthetic one:
+      <table class="n">
+        <tr><th>band</th><th class="r">share of page</th><th>what it is</th></tr>
+        <tr><td>244 – 254</td><td class="r">84%</td><td>paper — a broad shoulder, not one tone</td></tr>
+        <tr><td>191 – 243</td><td class="r">13.6%</td><td class="add">the guilloche</td></tr>
+        <tr><td>0 – 190</td><td class="r">8.8%</td><td>rules and text — what becomes ink</td></tr>
+      </table>
+      <mark>The guilloche sits entirely above <code>cut = 190</code>, so it never enters the
+      mask.</mark> On this document the honest answer is to do nothing, and the feature
+      correctly declines.
+      <br><br>
+      <b style="display:inline">The first version got this wrong</b> — it treated paper as a
+      single tone, latched onto 254, found its "densest band" at 246 (still paper), and lifted
+      84% of the page to white while changing the ink count by exactly zero. That is what
+      testing against a real scan caught and a synthetic mesh did not.
+    </div>
+
+
+    <div class="note warn">
+      <b>Two approaches that were tried and <em>failed</em> <span class="tag open">do not revisit</span></b>
+      Both were plausible enough to write down, and both were wrong when measured:
+      <table class="n">
+        <tr><th>approach</th><th>what actually happened</th></tr>
+        <tr><td><b>divide by a local max</b></td><td>the max over a radius finds the paper
+            <em>between</em> mesh lines, so the estimate is 255 everywhere and the division is
+            a no-op — a mesh at 175 came back 179</td></tr>
+        <tr><td><b>divide by a local closing</b></td><td>the closing finds the darkest
+            locally-ubiquitous tone, which is <em>the rule</em> — so rules were divided away
+            and the mesh survived, exactly backwards</td></tr>
+        <tr><td><b>threshold <code>max(R,G,B)</code></b></td><td>a no-op: the server renders
+            <code>csGRAY</code>, so all three channels already hold the same value. The idea
+            was sound and the premise was false</td></tr>
+      </table>
+      The reason is structural, and worth keeping: <mark>a mesh line and a rule are locally
+      identical</mark> — both are thin dark strokes. They differ only at page scale, in that
+      the mesh line has a parallel partner a few pixels away <em>everywhere</em> while the rule
+      is alone. <b>No local window can separate them, so no local estimate can either.</b>
+      The histogram works precisely because it is a global measure.
+      <br><br>
+      The multiplicative reasoning behind division is still correct — ink <em>is</em>
+      multiplicative — but it only helps once you already know which layer is the ground, which
+      is the whole problem.
+    </div>
+
+    <div class="note">
+      <b>Fallback — only if the histogram test is not enough</b>
+      It handles anything that behaves like a <em>ground</em>: one ink, one pass, a large share
+      of the crop. A ground printed in several tones, or one covering less of the page than the
+      table's own rules, would defeat it. Then fall back to per-region signals and let them
+      vote, rather than committing to one rule:
+      <table class="n">
+        <tr><th>signal</th><th>background looks like</th><th>cost</th></tr>
+        <tr><td><b>recurrence</b></td><td>many near-identical regions across the page</td><td>hash size+tone, count collisions</td></tr>
+        <tr><td><b>coverage spread</b></td><td>present in almost every tile, low variance</td><td>one tiled histogram</td></tr>
+        <tr><td><b>local contrast</b></td><td>weak against its own surround</td><td>local max − min</td></tr>
+        <tr><td><b>chromaticity</b></td><td class="del">unavailable — pages render greyscale</td><td>—</td></tr>
+      </table>
+      Colour is struck from that list entirely: pages arrive greyscale, so there is no hue to
+      test. Recurrence is the signal that survives every case tried, including a <em>black</em>
+      guilloche, where local contrast reads 160 — indistinguishable from a real rule.
+      <br><br>
+      <b style="display:inline">The knob users understand</b> is a single "remove background"
+      strength — the radius of the ground estimate — not a threshold on any of these.
+    </div>
+
+    <div class="note warn">
+      <b>Why any of this must precede the mask <span class="tag open">the downstream cost</span></b>
+      Background that survives into the binary mask is not merely noise.
+      <mark>Stage 4 mends it into the rules it touches, and stage 7 counts its crossings as
+      structure.</mark> A mesh covering every cell hands the crossing stage thousands of false
+      partners, and once mended into a rule, nothing downstream can separate them again.
+      <br><br>
+      One caveat on the evidence: <b>a mesh that is genuinely denser than the table's own
+      rules will win any vote based on ubiquity</b> — at which point the right move is to
+      treat the dominant repeating pattern as the ground and subtract it, rather than to
+      classify pixel by pixel.
+    </div>
+
+
+    <div class="carry"><b>carries →</b> one darkened <em>channel</em> — colour is already gone</div>
+  </div>
+</div>
+
+<div class="arrow"><div class="g">↓</div><div class="l">threshold</div></div>
+
+<!-- 3 -->
+<div class="stage">
+  <div class="num">3</div>
+  <div class="body">
+    <p class="ttl">Threshold to binary ink</p>
+    <p class="fn mono">darkenValue(d[j], g) &lt; cut → 1</p>
+    <p>
+      Every pixel of the <em>darkened</em> grey below <code>cut</code> (default 190) becomes
+      ink. One bit per pixel: no colour, no greyscale survives.
+    </p>
+    <div class="note">
+      <b>Consequence</b>
+      Printed rules, text, stamps, pencil marks and a security-print mesh are now
+      <em>identical</em> — all just "ink". Every later stage must separate them by
+      <em>shape</em> alone, with no colour and no grey level to appeal to.
+    </div>
+    <div class="note">
+      <b>Nothing can be separated here</b>
+      By this line the page is <em>already</em> one channel. The threshold is only the last
+      step of a decision made at stage 2 — <mark>which is where the background fix belongs</mark>.
+    </div>
+
+    <div class="carry"><b>carries →</b> <code>scanned</code> (binary mask — colour is gone from here on)</div>
+  </div>
+</div>
+
+<div class="arrow"><div class="g">↓</div><div class="l">mend breaks</div></div>
+
+<!-- 4 -->
+<div class="stage edit">
+  <div class="num">4</div>
+  <div class="body">
+    <p class="ttl">Mend toner voids <span class="tag">changed</span></p>
+    <p class="fn mono">closeGaps(ink, w, h, mendSpan)</p>
+    <p>
+      A printed rule reaches the page in pieces, split by holes where the toner did not
+      take. Any blank run with ink on <em>both</em> sides, shorter than the tolerance, is
+      filled — the two axes closed separately, then unioned.
+    </p>
+    <figure>
+      <svg viewBox="0 0 600 84" role="img" aria-label="A broken rule before and after mending">
+        <text x="8" y="22" font-size="11" fill="currentColor" opacity=".6">before</text>
+        <rect x="70" y="14" width="150" height="7" fill="var(--h)"/>
+        <rect x="228" y="14" width="120" height="7" fill="var(--h)"/>
+        <rect x="356" y="14" width="180" height="7" fill="var(--h)"/>
+        <text x="8" y="64" font-size="11" fill="currentColor" opacity=".6">after</text>
+        <rect x="70" y="56" width="466" height="7" fill="var(--h)"/>
+        <rect x="220" y="56" width="8" height="7" fill="var(--amber)"/>
+        <rect x="348" y="56" width="8" height="7" fill="var(--amber)"/>
+      </svg>
+      <figcaption>Amber marks the invented pixels. Ink on both sides is required, so a free end never grows.</figcaption>
+    </figure>
+    <div class="note warn">
+      <b>What changed — and why it was wrong</b>
+      Was a fixed <code>5 px</code>. But stage 1 magnifies a small crop up to 4×, so five
+      raster pixels meant <em>four different physical sizes</em> depending on which table
+      it ran on. A toner void is physical; the number bridging it must scale with the raster.
+      <br><br>
+      Now <code>mendSpan = (pct/100) × √(w·h)</code> — the side of the equal-area square.
+      Since <code>w,h</code> are already post-enlargement, this lands on the same physical
+      gap at any magnification. Default <b>1%</b>.
+    </div>
+    <table class="n">
+      <tr><th>crop</th><th class="r">√(w·h)</th><th class="r">1%</th><th class="r">old fixed</th></tr>
+      <tr><td>1900×380 · title block</td><td class="r">850</td><td class="r">8.5 px</td><td class="r">5 px</td></tr>
+      <tr><td>1600×900 · full table</td><td class="r">1200</td><td class="r">12.0 px</td><td class="r">5 px</td></tr>
+      <tr><td>1000×1000 · small, 4× up</td><td class="r">1000</td><td class="r">10.0 px</td><td class="r">5 px</td></tr>
+    </table>
+    <div class="carry"><b>carries →</b> <code>ink</code> (mended mask — every stage below reads this), <code>mendSpan</code></div>
+  </div>
+</div>
+
+<div class="fork">from the mended image, two independent readings</div>
+
+<!-- 5 -->
+<div class="stage">
+  <div class="num">5</div>
+  <div class="body">
+    <p class="ttl">Run lengths, both directions</p>
+    <p class="fn mono">runLengths() → hl, vl</p>
+    <p>
+      For every ink pixel: how long is the horizontal run it belongs to
+      (<code>hl</code>), and the vertical one (<code>vl</code>). No filtering — every run
+      of dark pixels counts, glyph strokes included.
+    </p>
+    <div class="carry"><b>carries →</b> <code>hl</code>, <code>vl</code>, and raw counts <code>hRuns</code> / <code>vRuns</code></div>
+  </div>
+</div>
+
+<div class="arrow"><div class="g">↓</div><div class="l">assign each pixel to one axis</div></div>
+
+<!-- 6 -->
+<div class="stage">
+  <div class="num">6</div>
+  <div class="body">
+    <p class="ttl">Axis assignment</p>
+    <p class="fn mono">hDom() — hl[i] &gt;= vl[i]</p>
+    <p>
+      Each ink pixel is awarded to whichever direction it runs <em>further</em> in. Ties go
+      horizontal. A hard partition: no pixel contributes to both masks.
+    </p>
+    <div class="carry"><b>carries →</b> two disjoint masks, <span class="h">horizontal</span> and <span class="v">vertical</span></div>
+  </div>
+</div>
+
+<div class="arrow"><div class="g">↓</div><div class="l">merge runs into lines, then straighten broken rules</div></div>
+
+<!-- 7 -->
+<div class="stage edit">
+  <div class="num">7</div>
+  <div class="body">
+    <p class="ttl">Merge into lines, then join collinear pieces <span class="tag">changed</span></p>
+    <p class="fn mono">mergeLines() → joinCollinear()</p>
+    <p>
+      <b>mergeLines</b> stacks <em>parallel</em> runs: segments in adjacent rows (±1)
+      overlapping by more than 60% of the shorter one are one line. This turns a 7 px-thick
+      rule into a single object rather than seven.
+    </p>
+    <p>
+      <b>joinCollinear</b> (new) handles the other axis: two pieces of one rule separated
+      <em>along their length</em>. <code>mergeLines</code> cannot do this — its 60% overlap
+      test is about parallel stacking, and two pieces split along their length overlap by
+      zero there, by construction.
+    </p>
+    <figure>
+      <svg viewBox="0 0 600 120" role="img" aria-label="Two skewed pieces joined into one straight line">
+        <text x="8" y="20" font-size="11" fill="currentColor" opacity=".6">two pieces, slightly skewed</text>
+        <rect x="70" y="30" width="200" height="6" fill="var(--h)"/>
+        <rect x="290" y="36" width="240" height="6" fill="var(--h)"/>
+        <rect x="66" y="26" width="468" height="20" fill="none" stroke="var(--drop)" stroke-dasharray="4 3"/>
+        <text x="540" y="40" font-size="10" fill="var(--drop)">union box</text>
+
+        <text x="8" y="80" font-size="11" fill="currentColor" opacity=".6">straightened</text>
+        <rect x="70" y="90" width="460" height="6" fill="var(--good)"/>
+        <text x="540" y="99" font-size="10" fill="var(--good)">one band</text>
+      </svg>
+      <figcaption>
+        The union box (dashed) is fatter than either piece. Averaging keeps the joined rule
+        as thin as the rule really is.
+      </figcaption>
+    </figure>
+    <div class="note warn">
+      <b>Two invariants this must respect</b>
+      <b style="display:inline">1 · No extension along the length.</b> The run extent is the
+      <em>union</em> of two spans that already exist, so no endpoint moves outward and no
+      free end grows into empty space. <mark>A crossing that holds after a join held before
+      it.</mark> A line reaching a perpendicular only because it was stretched is not
+      connected, and must not be allowed to look connected.
+      <br><br>
+      <b style="display:inline">2 · Straighten, don't bound.</b> On a skewed scan the pieces
+      sit at different heights; the union band is fatter than either. Since
+      <code>crosses()</code> tests that box, a union would widen the line's reach and let it
+      meet perpendiculars neither piece touched. So centre and thickness are averaged,
+      <em>weighted by length</em> — a long piece knows where the rule is, a stub does not.
+    </div>
+    <div class="note why">
+      <b>Second benefit: the lattice stays honest</b>
+      <code>ruleThick</code> (stage 10) is a <code>Math.max</code> over <em>every</em>
+      connected line's band and sets clustering tolerance for the whole table. One
+      skew-fattened join would inflate it globally. An averaged band cannot.
+    </div>
+    <div class="carry"><b>carries →</b> <code>hLines</code>, <code>vLines</code> — rectangles with <code>{x0,y0,x1,y1,len,thick}</code></div>
+  </div>
+</div>
+
+<div class="arrow"><div class="g">↓</div><div class="l">keep the ones that touch a perpendicular</div></div>
+
+<!-- 8 -->
+<div class="stage edit">
+  <div class="num">8</div>
+  <div class="body">
+    <p class="ttl">Crossing — pure connectivity <span class="tag">changed</span></p>
+    <p class="fn mono">crosses(a, b) — inclusive AABB overlap</p>
+    <p>
+      A line is kept when it overlaps at least <code>minCross</code> perpendiculars
+      (default 1).
+    </p>
+    <div class="note warn">
+      <b>What changed: the length threshold is gone</b>
+      <span class="del">minPartner = 5% of min(w,h)</span> · <span class="del">vBig</span> ·
+      <span class="del">hBig</span> · <span class="del">the <code>cross ≥</code> slider</span>
+      <br><br>
+      Previously a crossing only counted if the partner was <em>long enough</em> — a size
+      judgement standing in for a structural one. <mark>Every line is valid; size says
+      nothing about whether it is structure.</mark> A short rule between two close columns
+      is as real as the frame. Partners are now the <em>full</em> line sets.
+      <br><br>
+      <span class="add">After this change there is no length comparison anywhere in the line stages.</span>
+    </div>
+    <div class="note why">
+      <b>The extension rule, and why it needs no new code</b>
+      <em>If a line already touches another line, it is a boundary. If it would only touch
+      one when extended, the act of extending proves it was not connected.</em>
+      <code>crosses()</code> is plain inclusive overlap with <b>zero tolerance</b> — it
+      never extends anything, so the rule is already honoured. The work was in
+      <em>not breaking</em> it at stage 6.
+    </div>
+    <table class="n">
+      <tr><th>direction</th><th class="r">in</th><th class="r">kept (before)</th></tr>
+      <tr><td><span class="h">horizontal</span></td><td class="r">956</td><td class="r">22</td></tr>
+      <tr><td><span class="v">vertical</span></td><td class="r">1,038</td><td class="r">207</td></tr>
+    </table>
+    <div class="carry"><b>carries →</b> <code>hKept</code>, <code>vKept</code></div>
+  </div>
+</div>
+
+<div class="arrow"><div class="g">↓</div><div class="l">drop lines that never reach a second perpendicular</div></div>
+
+<!-- 9 -->
+<div class="stage">
+  <div class="num">9</div>
+  <div class="body">
+    <p class="ttl">Spanning — both ends anchored</p>
+    <p class="fn mono">spanOK(line, partners, horiz, limit)</p>
+    <p>
+      A real divider runs from one perpendicular <em>across</em> to another. Both endpoints
+      must land <em>inside a different</em> perpendicular's own thickness band. The crop
+      border counts as an anchor, and each border is its own.
+    </p>
+    <div class="note warn">
+      <b>Known weakness <span class="tag open">not solved</span></b>
+      This assumes a table is a <em>closed lattice</em>. A title block is a <em>ruled
+      form</em>: the <span class="mono">MANAGER / CHIEF / CHECKED / DRAWN / DATE</span>
+      underlines end in whitespace, with no printed vertical at the left. Their low end
+      anchors on nothing, so <code>a.length === 0</code> and the rule dies — despite a
+      perfectly good right-hand anchor.
+      <br><br>
+      This is why horizontals collapse <b>22 → 5</b>. It is the next thing to fix.
+    </div>
+    <div class="note">
+      <b>Deliberately zero tolerance</b>
+      An earlier version measured to the partner's <em>centre</em> with slack, which broke
+      on thick rules: a 7 px rule spans y130–137, so a vertical starting at y136 is
+      <em>inside</em> it yet 3 px from centre. Measuring against the span makes the question
+      exact.
+    </div>
+    <div class="carry"><b>carries →</b> <code>hSpan</code>, <code>vSpan</code></div>
+  </div>
+</div>
+
+<div class="arrow"><div class="g">↓</div><div class="l">keep the connected frame</div></div>
+
+<!-- 10 -->
+<div class="stage">
+  <div class="num">10</div>
+  <div class="body">
+    <p class="ttl">Connected component</p>
+    <p class="fn mono">union-find over 90° crossings</p>
+    <p>
+      Every surviving line is a node; every 90° crossing an edge. Keep only the component
+      the outer border belongs to — the largest by bounding box. Anything floating inside a
+      cell, with no path out to the frame, is not part of the table.
+    </p>
+    <div class="note why">
+      <b>This is where table membership is actually decided</b>
+      <mark>Table boundaries are connected.</mark> That principle is enforced here, not by
+      per-line size tests upstream — which is exactly why stage 7 can afford to stop
+      filtering by length.
+    </div>
+    <div class="carry"><b>carries →</b> <code>hConn</code>, <code>vConn</code>, <code>frame</code> (its bounding box)</div>
+  </div>
+</div>
+
+<div class="arrow"><div class="g">↓</div><div class="l">snap onto a lattice, flood the closed regions</div></div>
+
+<!-- 11 -->
+<div class="stage">
+  <div class="num">11</div>
+  <div class="body">
+    <p class="ttl">Lines → cells</p>
+    <p class="fn mono">buildTable(hConn, vConn, frame, ruleThick)</p>
+    <p>
+      Rule centres are clustered onto shared <code>xs</code> / <code>ys</code> coordinates,
+      each lattice edge is marked as carrying a wall or not, then each open interior is
+      flooded. A flood cannot step across a rule, so it stops exactly at the cell walls.
+    </p>
+    <div class="note why">
+      <b>Merged cells need no special case</b>
+      A merged cell comes out as <em>one</em> region however many lattice units it covers —
+      nothing has to be told in advance which merges exist. The frame's four sides are added
+      as implicit rules, or the outermost column never closes.
+    </div>
+    <div class="note">
+      <b>The clustering tolerance is read off the data</b>
+      <code>ruleThick = max(every connected line's band width)</code> — its one job is to
+      merge the two edges of a single thick rule into one lattice coordinate, so the
+      thickest rule actually found is the right tolerance. Stage 6's straightening keeps
+      this number honest.
+    </div>
+    <div class="carry"><b>carries →</b> <code>table</code> — <code>{xs, ys, rows, cols, cells[]}</code>, each cell with <code>rowspan</code> / <code>colspan</code> / <code>rect</code></div>
+  </div>
+</div>
+
+<div class="arrow"><div class="g">↓</div><div class="l">which cells hold content</div></div>
+
+<!-- 12 -->
+<div class="stage">
+  <div class="num">12</div>
+  <div class="body">
+    <p class="ttl">Cell content</p>
+    <p class="fn mono">fillCells(table, ink, w, h)</p>
+    <p>
+      Each cell is inset by 6% of its shorter side, then every ink blob inside is flooded
+      (8-connected) and measured. A cell is <em>filled</em> if any blob survives two tests:
+    </p>
+    <table class="n">
+      <tr><th>test</th><th>threshold</th><th>rejects</th></tr>
+      <tr><td>minimum area</td><td class="mono">0.05% of cell</td><td>speckle, scan noise</td></tr>
+      <tr><td>rule-shaped</td><td class="mono">≥90% span &amp; ≤5% thick</td><td>a leftover rule inside the inset</td></tr>
+    </table>
+    <div class="carry"><b>carries →</b> per cell: <code>ink</code> fraction, <code>blobs</code>, <code>filled</code></div>
+  </div>
+</div>
+
+<div class="stage" style="margin-top:2rem; border-color:var(--rule)">
+  <div class="num" style="color:var(--rule)">?</div>
+  <div class="body">
+    <p class="ttl">Open problems, in the order they bite</p>
+    <p class="fn">what this document says to fix next</p>
+    <table class="n">
+      <tr><th>stage</th><th>problem</th><th>direction</th></tr>
+      <tr>
+        <td><b>0</b> · upload</td>
+        <td>The page is rendered <code>csGRAY</code> and cached, so colour is destroyed before
+            the user has drawn a single box — the earliest possible moment, with the least
+            evidence. No later stage can recover it.</td>
+        <td>Store the render in colour, let the user mark boxes on the original, and choose the
+            grey collapse <em>after</em> the crop — where a <span class="mono">grey · lightest ·
+            darkest · R/G/B</span> control can be judged against the actual document. No single
+            collapse is right for every page: <code>max</code> drops a cyan mesh but also a blue
+            signature; luminance keeps the signature but keeps a red stamp too.</td>
+      </tr>
+      <tr>
+        <td><b>2</b> · darken</td>
+        <td>A ground dark enough to cross <code>cut</code> lands in the mask, and stage 4 then
+            mends it into the rules it touches. (Not the case on the certificate tested — its
+            guilloche sits above <code>cut</code> and never reaches the mask.)</td>
+        <td class="add">Done — opt-in "remove background" checkbox, off by default. Finds the
+            densest tone band <em>below</em> <code>cut</code> and lifts it out; declines when
+            there is none. Five cases verified, including clean-scan and faint-rule no-ops.</td>
+      </tr>
+      <tr>
+        <td><b>8</b> · spanning</td>
+        <td>Demands both endpoints sit inside a perpendicular. Assumes a closed lattice; a
+            ruled form has rules that end in whitespace. Horizontals collapse 22 → 5.</td>
+        <td>Accept one solid anchor, or anchor on the projected lattice coordinate rather
+            than a physical partner.</td>
+      </tr>
+    </table>
+    <div class="note">
+      <b>Why the order matters</b>
+      Stage 3 comes first not because it is worse but because it is <em>upstream</em>: every
+      later stage reads the mask it produces, and colour — the cheapest way to identify a
+      stamp — is discarded there and unrecoverable afterwards.
+    </div>
+  </div>
+</div>
+
+<div class="legend">
+  <span style="color:var(--h)">horizontal lines</span>
+  <span style="color:var(--v)">vertical lines</span>
+  <span style="color:var(--amber)">changed this round</span>
+  <span style="color:var(--good)">result / invariant holds</span>
+  <span style="color:var(--dim)">open problem — not solved yet</span>
+</div>
+
+<footer>
+  Source: <code>stle/static/app.js</code> — served at
+  <code>http://127.0.0.1:8011/</code>.
+</footer>
+
+</div>
+</body>
+</html>
