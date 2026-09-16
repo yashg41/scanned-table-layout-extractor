@@ -773,18 +773,18 @@ async function buildCards(out, note, stale) {
            'bound no cell. Ringed on the graph panel.']] : []),
          ['grid', `${gt.cols} columns × ${gt.rows} rows — indices only, derived ` +
            'from where the cells sit'],
-         ['—— the three panels ——', ''],
-         ['1 · crop', 'the scan, untouched'],
-         ['2 · graph', 'the junction graph the cells were read from'],
-         ['3 · table', 'the cells themselves, on white'],
-         ['—— panel 2, the graph ——', ''],
+         ['—— the three panels, stacked ——', ''],
+         ['top · crop', 'the scan, untouched'],
+         ['middle · graph', 'the junction graph the cells were read from'],
+         ['bottom · cells', 'the cells themselves, on white'],
+         ['—— the graph panel ——', ''],
          ['green line', 'an edge in the kept component — ink runs the whole way'],
          ['red line', 'an edge in some other component, with no path to the frame'],
          ['green dot', 'a junction in the kept component'],
          ['red dot', 'a junction dropped with its component'],
          ['orange ring', 'a junction with an arm the pixels show but no edge for'],
          ['purple ring', 'a junction no loop closed around — it bounds no cell'],
-         ['—— panel 3, the cells ——', ''],
+         ['—— the cells panel ——', ''],
          ['green', 'holds content'],
          ['red', 'empty'],
          ['amber', 'spans more than one row or column'],
@@ -2716,26 +2716,30 @@ function tableFromGraph(a, reach) {
   return { G, table, faces: F };
 }
 
-// Three panels at identical scale and alignment: the crop, the junction graph
-// it produced, and the table read off that graph. The middle panel is the point
-// — when a cell is wrong, the question is always whether the graph was wrong
-// too, and that is only answerable by seeing both.
+// Three panels STACKED: the crop, the junction graph it produced, and the table
+// read off that graph. The graph panel is the point — when a cell is wrong, the
+// question is always whether the graph was wrong too, and that is only
+// answerable by seeing both.
+//
+// Stacked rather than side by side because a table crop is usually far wider
+// than it is tall: three of them abreast leaves each a third of the width and
+// nothing legible, while three stacked keep the full width each.
 function graphTableCanvas(a, reach, sel) {
   const { w, h } = a;
   const R = tableFromGraph(a, reach);
-  const gap = Math.max(12, Math.round(w * 0.03));
+  const gap = Math.max(12, Math.round(h * 0.04));
   const c = document.createElement('canvas');
-  c.width = w * 3 + gap * 2; c.height = h;
+  c.width = w; c.height = h * 3 + gap * 2;
   // tell the viewer this canvas is panelled, so the hover readout reports a
   // coordinate within a panel rather than the raw canvas offset
-  c.panelWidth = w; c.panelOffset = w + gap;
+  c.panelHeight = h; c.panelStride = h + gap;
   const ctx = c.getContext('2d');
-  ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, c.width, h);
+  ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, w, c.height);
   ctx.fillStyle = '#e9ebef';
-  ctx.fillRect(w, 0, gap, h);
-  ctx.fillRect(w * 2 + gap, 0, gap, h);
+  ctx.fillRect(0, h, w, gap);
+  ctx.fillRect(0, h * 2 + gap, w, gap);
 
-  // LEFT: the crop exactly as it is, nothing drawn over it
+  // TOP: the crop exactly as it is, nothing drawn over it
   if (pageImg && BOX) {
     ctx.drawImage(pageImg, BOX.x0, BOX.y0, BOX.x1 - BOX.x0, BOX.y1 - BOX.y0, 0, 0, w, h);
   }
@@ -2745,7 +2749,7 @@ function graphTableCanvas(a, reach, sel) {
   {
     const G = R.G;
     ctx.save();
-    ctx.translate(w + gap, 0);
+    ctx.translate(0, h + gap);
     const jr = Math.max(2, Math.round(Math.min(w, h) / 200));
     const jlw = Math.max(1.5, jr / 2.5);
     for (const e of G.edges) {
@@ -2787,9 +2791,9 @@ function graphTableCanvas(a, reach, sel) {
     cell.x0 === sel.cell.x0 && cell.y0 === sel.cell.y0 &&
     cell.x1 === sel.cell.x1 && cell.y1 === sel.cell.y1;
 
-  // RIGHT: the table alone, on white — the structure with no scan behind it
+  // BOTTOM: the table alone, on white — the structure with no scan behind it
   ctx.save();
-  ctx.translate(w * 2 + gap * 2, 0);
+  ctx.translate(0, h * 2 + gap * 2);
   for (const cell of R.table.cells) {
     const on = !sel || isSel(cell);
     ctx.globalAlpha = on ? 1 : 0.25;
@@ -2815,13 +2819,13 @@ function graphTableCanvas(a, reach, sel) {
     // this render actually produced rather than a stale copy
     const cell = R.table.cells.find(isSel) || sel.cell;
     const cw = cell.x1 - cell.x0, ch = cell.y1 - cell.y0;
-    for (const dx of [0, w + gap, w * 2 + gap * 2]) {
+    for (const dy of [0, h + gap, h * 2 + gap * 2]) {
       ctx.save();
-      ctx.translate(dx, 0);
-      if (dx === 0) {
+      ctx.translate(0, dy);
+      if (dy === 0) {
         // on the scan: a tint light enough to leave the content readable
         ctx.fillStyle = 'rgba(255,214,0,.16)';
-      } else if (dx === w + gap) {
+      } else if (dy === h + gap) {
         // over the graph: lighter still, so the edges stay legible under it
         ctx.fillStyle = 'rgba(255,214,0,.12)';
       } else {
@@ -3773,10 +3777,18 @@ $('zoom').addEventListener('click', e => { if (e.target.id === 'zoom') closeZoom
       const y = Math.floor((e.clientY - r.top) * k);
       const inside = x >= 0 && y >= 0 && x < zCanvas.width && y < zCanvas.height;
       if (!inside) { $('zat').textContent = ''; return; }
-      // a side-by-side canvas repeats the crop; report the coordinate within
-      // whichever panel the cursor is over, not the raw canvas offset
-      const pw = zCanvas.panelWidth;
-      if (pw && x >= zCanvas.panelOffset) {
+      // A panelled canvas repeats the same crop, side by side or stacked;
+      // report the coordinate within whichever panel the cursor is over rather
+      // than the raw canvas offset.
+      const pw = zCanvas.panelWidth, ph = zCanvas.panelHeight;
+      if (ph) {
+        // stacked: which band, and is the cursor in a gutter between them
+        const stride = zCanvas.panelStride;
+        const band = Math.floor(y / stride), within = y - band * stride;
+        const name = ['crop', 'graph', 'cells'][band] || '';
+        $('zat').textContent = within < ph
+          ? `${x}, ${within}` + (name ? `  ${name}` : '') : '';
+      } else if (pw && x >= zCanvas.panelOffset) {
         $('zat').textContent = `${x - zCanvas.panelOffset}, ${y}  ▸right`;
       } else if (pw && x >= pw) {
         $('zat').textContent = '';          // in the gutter between panels
