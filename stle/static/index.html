@@ -123,6 +123,18 @@
                   border-radius:4px; padding:3px 9px; font-size:12px; cursor:pointer; }
   .zhint { color:#6c7280; font:10px monospace; }
   @media (max-width:52rem) { .zhint { display:none; } }
+
+  /* which panels of a stacked view to show — one to study, two to compare,
+     three for the overview */
+  #zpanels { display:inline-flex; border:1px solid #555; border-radius:4px;
+             overflow:hidden; }
+  #zpanels[hidden] { display:none; }
+  #zpanels .pn { background:#2a2d34; color:#8a8f99; border:0;
+                 border-right:1px solid #555; border-radius:0;
+                 padding:3px 9px; font:11px monospace; cursor:pointer; }
+  #zpanels .pn:last-child { border-right:0; }
+  #zpanels .pn.on { background:#3f6fd8; color:#fff; }
+  #zpanels .pn:hover { filter:brightness(1.15); }
   /* live cursor position, in the coordinates the pipeline uses */
   #zat { color:#7ee2a8; font:12px monospace; font-weight:normal;
          min-width:11ch; }
@@ -299,6 +311,11 @@
       <button id="zin">+</button>
       <b id="zpct">100%</b>
       <b id="zat"></b>
+      <span id="zpanels" hidden>
+        <button class="pn on" data-panel="0">crop</button><!--
+     --><button class="pn on" data-panel="1">graph</button><!--
+     --><button class="pn on" data-panel="2">cells</button>
+      </span>
       <span class="zhint">drag to pan · ⌘/ctrl+scroll to zoom</span>
       <button id="zclose">close</button>
     </div>

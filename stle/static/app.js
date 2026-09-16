@@ -16,6 +16,10 @@ let W = 0, H = 0, pageImg = null;
 // pixels, so the pipeline sees the same crop whatever the zoom.
 let PAGEZOOM = null;
 
+// Which panels of a stacked comparison view are shown: crop, graph, cells.
+// One to study something closely, two to compare, three for the overview.
+const PANELS = [true, true, true];
+
 // The rectangle the user drew, in raster pixels at the current dpi, or null.
 let BOX = null;
 // Remembered per page, so flipping away and back does not lose the work.
@@ -773,10 +777,13 @@ async function buildCards(out, note, stale) {
            'bound no cell. Ringed on the graph panel.']] : []),
          ['grid', `${gt.cols} columns × ${gt.rows} rows — indices only, derived ` +
            'from where the cells sit'],
-         ['—— the three panels, stacked ——', ''],
-         ['top · crop', 'the scan, untouched'],
-         ['middle · graph', 'the junction graph the cells were read from'],
-         ['bottom · cells', 'the cells themselves, on white'],
+         ['—— the panels ——', ''],
+         ['crop', 'the scan, untouched'],
+         ['graph', 'the junction graph the cells were read from'],
+         ['cells', 'the cells themselves, on white'],
+         ['switching', 'the crop / graph / cells buttons in the header show any ' +
+           'one, two or all three — one to study, two to compare, three for the ' +
+           'overview. The zoom and position are held while you switch.'],
          ['—— the graph panel ——', ''],
          ['green line', 'an edge in the kept component — ink runs the whole way'],
          ['red line', 'an edge in some other component, with no path to the frame'],
@@ -2728,28 +2735,36 @@ function graphTableCanvas(a, reach, sel) {
   const { w, h } = a;
   const R = tableFromGraph(a, reach);
   const gap = Math.max(12, Math.round(h * 0.04));
+  // Which panels to draw. One to study it closely, two to compare, three for
+  // the overview — at a wide crop three stacked panels each end up small, and
+  // the useful comparison is usually only two of them.
+  const want = PANELS.filter(p => p).length ? PANELS : [true, true, true];
+  const slot = [];               // panel index -> y offset, or -1 if hidden
+  let n = 0;
+  for (let i = 0; i < 3; i++) slot[i] = want[i] ? n++ : -1;
+  const at = i => slot[i] * (h + gap);
   const c = document.createElement('canvas');
-  c.width = w; c.height = h * 3 + gap * 2;
+  c.width = w; c.height = Math.max(1, n * h + Math.max(0, n - 1) * gap);
   // tell the viewer this canvas is panelled, so the hover readout reports a
   // coordinate within a panel rather than the raw canvas offset
-  c.panelHeight = h; c.panelStride = h + gap;
+  c.panelHeight = h; c.panelStride = h + gap; c.panelSlots = slot;
   const ctx = c.getContext('2d');
   ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, w, c.height);
   ctx.fillStyle = '#e9ebef';
-  ctx.fillRect(0, h, w, gap);
-  ctx.fillRect(0, h * 2 + gap, w, gap);
+  for (let k = 1; k < n; k++) ctx.fillRect(0, k * (h + gap) - gap, w, gap);
 
   // TOP: the crop exactly as it is, nothing drawn over it
-  if (pageImg && BOX) {
-    ctx.drawImage(pageImg, BOX.x0, BOX.y0, BOX.x1 - BOX.x0, BOX.y1 - BOX.y0, 0, 0, w, h);
+  if (pageImg && BOX && slot[0] >= 0) {
+    ctx.drawImage(pageImg, BOX.x0, BOX.y0, BOX.x1 - BOX.x0, BOX.y1 - BOX.y0,
+                  0, at(0), w, h);
   }
   if (!R || !R.table) return c;
 
   // MIDDLE: the junction graph, exactly as its own card draws it
-  {
+  if (slot[1] >= 0) {
     const G = R.G;
     ctx.save();
-    ctx.translate(0, h + gap);
+    ctx.translate(0, at(1));
     const jr = Math.max(2, Math.round(Math.min(w, h) / 200));
     const jlw = Math.max(1.5, jr / 2.5);
     for (const e of G.edges) {
@@ -2792,8 +2807,9 @@ function graphTableCanvas(a, reach, sel) {
     cell.x1 === sel.cell.x1 && cell.y1 === sel.cell.y1;
 
   // BOTTOM: the table alone, on white — the structure with no scan behind it
+  if (slot[2] >= 0) {
   ctx.save();
-  ctx.translate(0, h * 2 + gap * 2);
+  ctx.translate(0, at(2));
   for (const cell of R.table.cells) {
     const on = !sel || isSel(cell);
     ctx.globalAlpha = on ? 1 : 0.25;
@@ -2811,21 +2827,23 @@ function graphTableCanvas(a, reach, sel) {
   });
   ctx.globalAlpha = 1;
   ctx.restore();
+  }
 
-  // the selected cell, marked on ALL THREE panels so the region, the graph that
+  // the selected cell, marked on EVERY VISIBLE panel so the region, the graph that
   // enclosed it and the cell that claims it can be compared directly
   if (sel && sel.cell) {
     // use the freshly-built cell where one matches, so the box drawn is the one
     // this render actually produced rather than a stale copy
     const cell = R.table.cells.find(isSel) || sel.cell;
     const cw = cell.x1 - cell.x0, ch = cell.y1 - cell.y0;
-    for (const dy of [0, h + gap, h * 2 + gap * 2]) {
+    for (let pi = 0; pi < 3; pi++) {
+      if (slot[pi] < 0) continue;
       ctx.save();
-      ctx.translate(0, dy);
-      if (dy === 0) {
+      ctx.translate(0, at(pi));
+      if (pi === 0) {
         // on the scan: a tint light enough to leave the content readable
         ctx.fillStyle = 'rgba(255,214,0,.16)';
-      } else if (dy === h + gap) {
+      } else if (pi === 1) {
         // over the graph: lighter still, so the edges stay legible under it
         ctx.fillStyle = 'rgba(255,214,0,.12)';
       } else {
@@ -3612,7 +3630,7 @@ function listCard(label, make, dims, zoomTitle, rows) {
     // scroll position across or a pick 30 rows down would jump back to the top
     const prev = $('zstats').querySelector('.picklist');
     const at = prev ? prev.scrollTop : 0;
-    openZoom(make(active), zoomTitle, active ? active.dims : dims);
+    openZoom(make(active), zoomTitle, active ? active.dims : dims, openViewer);
     const rail = $('zstats');
 
     // every raw run of the selected group, with the numbers its join turned on
@@ -3663,10 +3681,18 @@ function listCard(label, make, dims, zoomTitle, rows) {
     th2.appendChild(make(item));
     for (const b of cardList.children) b.classList.toggle('on', b._item === item);
     if (!$('zoom').hidden && zCanvas) {
-      // the viewer is open — redraw it too, holding the current zoom
+      // The viewer is open — redraw it, holding the zoom AND the scroll
+      // position. Without the scroll the viewport snapped back on every pick
+      // and the cell had to be found again by hand.
       const keep = zScale;
+      const body = $('zbody');
+      const sl = body.scrollLeft, st = body.scrollTop;
       openViewer();
       setZoom(keep);
+      body.scrollLeft = sl; body.scrollTop = st;
+      // then bring the new selection into view if it is off screen, so picking
+      // a row is enough to see it
+      if (item && item.cell) revealCell(item.cell);
     }
   }
 
@@ -3678,9 +3704,17 @@ function listCard(label, make, dims, zoomTitle, rows) {
 
 // ---------- full-size viewer ----------
 let zCanvas = null, zScale = 1;
+// how to rebuild the open view, so the panel toggles can re-render it
+let zRedraw = null;
 
-function openZoom(canvas, title, dims) {
+function openZoom(canvas, title, dims, redraw) {
   zCanvas = canvas;
+  // a panelled canvas offers the panel toggles; anything else hides them
+  zRedraw = redraw || null;
+  $('zpanels').hidden = !canvas.panelSlots;
+  if (canvas.panelSlots)
+    for (const btn of $('zpanels').children)
+      btn.classList.toggle('on', PANELS[+btn.dataset.panel]);
   // The title keeps the short summary; the numbers go in their own panel, where
   // a length histogram has room to be read rather than being crushed into one
   // dot-separated line.
@@ -3737,6 +3771,41 @@ function setZoom(z, anchor) {
   zScale = Math.max(0.05, Math.min(8, z));
   applyZoom(anchor);
 }
+// Scroll the viewer so a cell is on screen, if it is not already. Called when a
+// row is picked, so choosing from the list is enough to see the thing chosen —
+// before this the viewport stayed where it was and the cell had to be hunted.
+//
+// On a stacked canvas the same cell appears in all three panels; aim at the one
+// nearest the current view, so picking a row does not drag you between panels.
+function revealCell(cell) {
+  if (!zCanvas) return;
+  const body = $('zbody');
+  const k = (zCanvas.clientWidth || zCanvas.width) / zCanvas.width;
+  const stride = zCanvas.panelStride || 0;
+  const slots = zCanvas.panelSlots;
+  const panels = stride && slots
+    ? slots.filter(s => s >= 0).map(s => s * stride)
+    : [0];
+  const cx = (cell.x0 + cell.x1) / 2;
+  const cyBase = (cell.y0 + cell.y1) / 2;
+  // the panel whose copy of this cell is closest to what is on screen now
+  const mid = body.scrollTop + body.clientHeight / 2;
+  let best = panels[0], bestD = Infinity;
+  for (const off of panels) {
+    const d = Math.abs((cyBase + off) * k - mid);
+    if (d < bestD) { bestD = d; best = off; }
+  }
+  const px = cx * k, py = (cyBase + best) * k;
+  const m = 40;                                  // keep a margin off the edge
+  const x0 = cell.x0 * k - m, x1 = cell.x1 * k + m;
+  const y0 = (cell.y0 + best) * k - m, y1 = (cell.y1 + best) * k + m;
+  // only move if the cell is not comfortably inside the viewport already
+  if (x0 < body.scrollLeft || x1 > body.scrollLeft + body.clientWidth)
+    body.scrollLeft = px - body.clientWidth / 2;
+  if (y0 < body.scrollTop || y1 > body.scrollTop + body.clientHeight)
+    body.scrollTop = py - body.clientHeight / 2;
+}
+
 function zoomFit() {
   if (!zCanvas) return;
   const body = $('zbody');
@@ -3745,7 +3814,10 @@ function zoomFit() {
     (body.clientHeight - 40) / zCanvas.height,
   ));
 }
-function closeZoom() { $('zoom').hidden = true; zCanvas = null; }
+function closeZoom() {
+  $('zoom').hidden = true; zCanvas = null; zRedraw = null;
+  $('zpanels').hidden = true;
+}
 
 $('zin').addEventListener('click', () => setZoom(zScale * 1.25));
 $('zout').addEventListener('click', () => setZoom(zScale / 1.25));
@@ -3753,6 +3825,26 @@ $('zfit').addEventListener('click', zoomFit);
 $('z100').addEventListener('click', () => setZoom(1));
 $('zclose').addEventListener('click', closeZoom);
 $('zoom').addEventListener('click', e => { if (e.target.id === 'zoom') closeZoom(); });
+
+// ---- panel toggles ----
+// A stacked view can show any one, two or all three of its panels: one to study
+// closely, two to compare, three for the overview. Toggling holds the zoom and
+// the scroll, so the view does not jump while you switch what is beside what.
+$('zpanels').addEventListener('click', e => {
+  const b = e.target.closest('.pn');
+  if (!b || !zRedraw) return;
+  const i = +b.dataset.panel;
+  // never turn the last one off — an empty canvas says nothing
+  if (PANELS[i] && PANELS.filter(Boolean).length === 1) return;
+  PANELS[i] = !PANELS[i];
+  for (const btn of $('zpanels').children)
+    btn.classList.toggle('on', PANELS[+btn.dataset.panel]);
+  const body = $('zbody');
+  const keep = zScale, sl = body.scrollLeft, st = body.scrollTop;
+  zRedraw();
+  setZoom(keep);
+  body.scrollLeft = sl; body.scrollTop = st;
+});
 
 // ---- drag to pan ----
 // Scrollbars alone are awkward on a deep zoom; dragging the image is how every
@@ -3782,10 +3874,14 @@ $('zoom').addEventListener('click', e => { if (e.target.id === 'zoom') closeZoom
       // than the raw canvas offset.
       const pw = zCanvas.panelWidth, ph = zCanvas.panelHeight;
       if (ph) {
-        // stacked: which band, and is the cursor in a gutter between them
+        // stacked: which band, and is the cursor in a gutter between them.
+        // `panelSlots` maps panel -> position, so a hidden panel is skipped and
+        // the name still matches what is actually drawn there.
         const stride = zCanvas.panelStride;
         const band = Math.floor(y / stride), within = y - band * stride;
-        const name = ['crop', 'graph', 'cells'][band] || '';
+        const slots = zCanvas.panelSlots || [0, 1, 2];
+        const which = slots.findIndex(s => s === band);
+        const name = ['crop', 'graph', 'cells'][which] || '';
         $('zat').textContent = within < ph
           ? `${x}, ${within}` + (name ? `  ${name}` : '') : '';
       } else if (pw && x >= zCanvas.panelOffset) {
