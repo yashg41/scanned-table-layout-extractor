@@ -742,50 +742,46 @@ async function buildCards(out, note, stale) {
     dims: [
       ['cell', `row ${cell.row}, col ${cell.col}`],
       ['span', `${cell.rowspan} row${cell.rowspan > 1 ? 's' : ''} × ${cell.colspan} col${cell.colspan > 1 ? 's' : ''}`],
-      ['grid box', `${cell.x0},${cell.y0} → ${cell.x1},${cell.y1}   (straightened)`],
-      ['ink box', `${cell.ix0},${cell.iy0} → ${cell.ix1},${cell.iy1}   (measured — ` +
-        'what the content test samples)'],
-      ['offset', (() => {
-        const d = Math.max(Math.abs(cell.ix0 - cell.x0), Math.abs(cell.iy0 - cell.y0),
-                           Math.abs(cell.ix1 - cell.x1), Math.abs(cell.iy1 - cell.y1));
-        return d ? `${d} px between the two` : 'none — the grid sits on the ink here';
-      })()],
+      ['box', `${cell.x0},${cell.y0} → ${cell.x1},${cell.y1}`],
+      ['corners', `${cell.corners} turns, from ${cell.nodes} junctions on the ` +
+        'boundary — a junction the side passes through is not a corner'],
       ['size', `${cell.x1 - cell.x0} × ${cell.y1 - cell.y0} px`],
       ['content', cell.filled ? 'holds ink' : 'empty'],
       ['ink in it', `${((cell.ink || 0) * 100).toFixed(1)}% of the cell, in ${cell.blobs || 0} blob${cell.blobs === 1 ? '' : 's'}`],
-      ['shape', cell.rect ? 'rectangular' : 'ragged — an L or T, which HTML cannot express'],
-      ['lattice units', `${cell.units}`],
+      ['shape', cell.rect ? 'rectangular — four turns'
+        : `${cell.corners} turns — an L or T, which HTML cannot express`],
       ['on the page', `x ${cell.x0}–${cell.x1}, y ${cell.y0}–${cell.y1} of the crop`],
       ['highlight', 'marked on both panels — the region on the scan, the cell on ' +
-        'the right; blue dots are its four lattice corners'],
+        'the right; blue dots are the junctions that close it'],
     ],
   })) : [];
-  out.appendChild(arrow('lattice → cells'));
+  out.appendChild(arrow('close the loops'));
   out.appendChild(listCard(
     'table from junctions',
     sel => graphTableCanvas(a, JREACH, sel),
     gt
-      ? [['lattice', `${gt.cols} columns × ${gt.rows} rows, from the junction coordinates`],
-         ['walls', `${gt.wallSpans} lattice spans carry a verified edge`],
-         ['cells', `${gt.cells.length}`],
-         ['merged', `${gt.spans} span more than one unit`],
+      ? [['cells', `${gt.cells.length} — each one a closed loop of edges`],
+         ['faces walked', `${gt.faces}, of which ${gt.outer} is the outer boundary`],
+         ['merged', `${gt.spans} span more than one row or column`],
          ['content', `${gt.cells.filter(c => c.filled).length} filled, ${gt.cells.filter(c => !c.filled).length} empty`],
-         ['ragged', `${gt.ragged} not rectangular`],
-         ['left', 'the crop, with each junction where the pixels put it and a tick ' +
-           'to the line it was straightened onto'],
+         ['ragged', `${gt.ragged} with more than four corners`],
+         ...(gt.dangling ? [['dangling', `${gt.dangling} directed edges enclose nothing`]] : []),
+         ['grid', `${gt.cols} columns × ${gt.rows} rows — indices only, derived ` +
+           'from where the cells sit'],
+         ['left', 'the crop, with each junction where the pixels put it'],
          ['right', 'the extracted table, on its own'],
-         ['straightened', `${GT.G.straightened} junctions moved` +
+         ['straightened', `${GT.G.straightened} junctions moved onto their rule’s line` +
            (GT.G.straightened ? `, largest ${GT.G.maxShift} px` : '')],
-         ['two boxes', 'structure uses the straightened grid; content is sampled ' +
-           'from the measured ink box, so a few px of correction never clips a glyph'],
+         ['geometry', 'every cell box is its own junctions, at the measured ' +
+           'positions — so the content test samples the real pixels'],
          ['green', 'holds content · red empty · amber merged · purple ragged'],
-         ['blue dots', 'the junctions the lattice came from'],
-         ['built from', 'junctions and verified edges only — no merged lines, no ' +
-           'crossing filter, no spanning filter'],
+         ['blue dots', 'the junctions that close each cell'],
+         ['no lattice', 'cells are the graph’s faces. A region that is not ' +
+           'enclosed cannot close a loop, so an empty margin cannot become a cell'],
          ['compare', `the line-based route gives ${a.table ? `${a.table.rows} × ${a.table.cols}, ${a.table.cells.length} cells` : 'nothing'}`]]
-      : [['result', 'no lattice — fewer than two rows or columns of junctions'],
+      : [['result', 'no closed loops — the graph encloses nothing'],
          ['try', 'a smaller reach, or check the junction graph card above']],
-    'table from junctions: lattice from junction coordinates, walls from graph edges',
+    'table from junctions: each cell a closed loop of graph edges',
     gtRows
   ));
 
@@ -2535,28 +2531,126 @@ function cluster(vals, tol) {
 }
 
 // ---------------------------------------------------------------------------
+// The faces of the junction graph.
+//
+// A cell is a closed loop of edges. The graph is planar and its edges are
+// axis-aligned, so its bounded faces ARE the cells, and they can be walked
+// directly: from each directed edge, arrive at a node, then take the next edge
+// clockwise from the reverse of the arrival direction. Follow that until the
+// walk returns to where it started. Each directed edge belongs to exactly one
+// face, so marking them used finds every face once, in O(E).
+//
+// This replaces a lattice. The old conversion split each junction into an x and
+// a y, clustered the two lists independently and crossed every column line with
+// every row line — which assumes the table fills a rectangle. Real tables do
+// not. A table whose header row starts one column in still got a column line to
+// its left and a row line across its top, and their crossing was a point the
+// paper never had; the flood, which knows only walls, read that empty region as
+// open interior and made it a cell.
+//
+// Requiring every cell corner to be a junction does not fix it — that was tried
+// and reverted. When an edge spans several lattice lines it walls each
+// intermediate crossing, and those crossings by construction have no junction
+// on that rule, because the edge walk stopped at the first junction it reached.
+// A row rule running past a divider that stops elsewhere is a legitimate corner
+// with no junction at it, so non-junction crossings are normal.
+//
+// A face walk needs no such test. A region that is not enclosed cannot close a
+// loop, so the phantom is impossible rather than filtered out, and a merged cell
+// needs no special handling: it is simply a face whose side is one long edge.
+// ---------------------------------------------------------------------------
+const DIR_R = 0, DIR_D = 1, DIR_L = 2, DIR_U = 3;
+
+function facesFromGraph(G) {
+  const { pts, edges, inMain } = G;
+  const live = edges.filter(e => inMain.has(e.a) && inMain.has(e.b));
+
+  // adjacency: for each node, its edges by compass direction
+  const adj = pts.map(() => []);
+  for (const e of live) {
+    const p = pts[e.a], q = pts[e.b];
+    const d = e.horiz ? (q.x > p.x ? DIR_R : DIR_L) : (q.y > p.y ? DIR_D : DIR_U);
+    adj[e.a].push({ to: e.b, dir: d });
+    adj[e.b].push({ to: e.a, dir: (d + 2) % 4 });
+  }
+  for (const list of adj) list.sort((m, n) => m.dir - n.dir);
+
+  const used = new Set();
+  const key = (from, to) => `${from}>${to}`;
+  const faces = [];
+  const guardMax = live.length * 4 + 16;
+
+  for (const e of live) {
+    for (const [s0, s1] of [[e.a, e.b], [e.b, e.a]]) {
+      if (used.has(key(s0, s1))) continue;
+      const loop = [s0];
+      let from = s0, to = s1, guard = 0, closed = false;
+      while (guard++ < guardMax) {
+        used.add(key(from, to));
+        loop.push(to);
+        const arrived = adj[from].find(x => x.to === to);
+        if (!arrived) break;
+        const back = (arrived.dir + 2) % 4;
+        // next edge clockwise from the way we came
+        let pick = null;
+        for (let s = 1; s <= 4 && !pick; s++)
+          pick = adj[to].find(x => x.dir === (((back - s) % 4) + 4) % 4) || null;
+        if (!pick) break;
+        from = to; to = pick.to;
+        if (from === s0 && to === s1) { closed = true; break; }
+      }
+      if (!closed || loop.length < 4) continue;
+      const nodes = loop.slice(0, -1);
+      // Shoelace. With y increasing DOWNWARD a bounded face walked this way
+      // comes out positive and the outer boundary negative, so the sign alone
+      // separates the cells from the perimeter.
+      let area2 = 0;
+      for (let i = 0; i < nodes.length; i++) {
+        const p = pts[nodes[i]], q = pts[nodes[(i + 1) % nodes.length]];
+        area2 += p.x * q.y - q.x * p.y;
+      }
+      // Corners are direction CHANGES, not nodes. A face walking along a side
+      // passes through every junction on it — a tee where a divider from the
+      // next row meets this cell's edge is a node on the boundary but not a
+      // corner — so a plain rectangle routinely has five or six nodes and
+      // exactly four turns. Counting nodes marks every such cell as ragged.
+      let turns = 0;
+      for (let i = 0; i < nodes.length; i++) {
+        const prev = pts[nodes[(i - 1 + nodes.length) % nodes.length]];
+        const here = pts[nodes[i]];
+        const next = pts[nodes[(i + 1) % nodes.length]];
+        if ((prev.y === here.y) !== (here.y === next.y)) turns++;
+      }
+      faces.push({ nodes, turns, area: area2 / 2 });
+    }
+  }
+  const cells = faces.filter(f => f.area > 0);
+  return { faces, cells, outer: faces.filter(f => f.area <= 0), live: live.length };
+}
+
+// ---------------------------------------------------------------------------
 // Junction graph -> table.
 //
-// The lattice comes from the junctions themselves: distinct x's are the column
-// lines, distinct y's the row lines. What makes this different from the
-// line-based buildTable is where the WALLS come from — there, a wall exists if
-// some line's bounding box, snapped to the lattice, covers that span. Here a
-// wall exists only if the graph has an edge between two adjacent junctions,
-// and an edge was only created when ink ran the whole way. So a wall is
-// evidence of ink, not of an overlapping box.
-//
-// Cells are then the faces of that grid: flood the lattice, unable to step
-// across a wall, and each closed region is one cell however many units it
-// spans. Merged cells fall out without being told about.
+// Cells come from the graph's faces. Rows and columns are assigned afterwards,
+// by looking up where each cell sits among the straightened edge coordinates —
+// a reporting step over real cells rather than a grid they are forced into, so
+// a table that is not a rectangle produces the cells it has and no filler.
 // ---------------------------------------------------------------------------
 function tableFromGraph(a, reach) {
   const G = junctionGraph(a, reach);
   if (!G.main) return null;
-  const xs = G.lattice.cols.map(c => c.at);
-  const ys = G.lattice.rows.map(r => r.at);
-  if (xs.length < 2 || ys.length < 2) return { G, table: null };
 
-  const nx = xs.length - 1, ny = ys.length - 1;
+  const F = facesFromGraph(G);
+  if (!F.cells.length) return { G, table: null, faces: F };
+
+  // Row and column lines, for indexing only. These come from the straightened
+  // coordinates of the junctions that actually bound cells — they are used to
+  // say WHICH row a cell is in, never to generate a cell.
+  const tol = G.tol;
+  const usedPts = new Set();
+  for (const f of F.cells) for (const n of f.nodes) usedPts.add(n);
+  const xs = cluster([...usedPts].map(i => G.pts[i].gx), tol).map(c => c.at);
+  const ys = cluster([...usedPts].map(i => G.pts[i].gy), tol).map(c => c.at);
   const near = (arr, v) => {
     let best = 0;
     for (let i = 1; i < arr.length; i++)
@@ -2564,78 +2658,48 @@ function tableFromGraph(a, reach) {
     return best;
   };
 
-  // Walls, straight from the edges, using the STRAIGHTENED coordinates. Every
-  // junction on one rule now shares a coordinate, so both ends of an edge snap
-  // to the same lattice line by construction — the independent-snap failure
-  // that let cells leak cannot happen.
-  const vwall = Array.from({ length: ny }, () => new Array(nx + 1).fill(false));
-  const hwall = Array.from({ length: ny + 1 }, () => new Array(nx).fill(false));
-  let used = 0;
-  for (const e of G.edges) {
-    if (!G.inMain.has(e.a) || !G.inMain.has(e.b)) continue;
-    const p = G.pts[e.a], q = G.pts[e.b];
-    if (e.horiz) {
-      const i = near(ys, (p.gy + q.gy) / 2);
-      const c0 = near(xs, Math.min(p.gx, q.gx)), c1 = near(xs, Math.max(p.gx, q.gx));
-      for (let j = c0; j < c1; j++) { hwall[i][j] = true; used++; }
-    } else {
-      const j = near(xs, (p.gx + q.gx) / 2);
-      const r0 = near(ys, Math.min(p.gy, q.gy)), r1 = near(ys, Math.max(p.gy, q.gy));
-      for (let i = r0; i < r1; i++) { vwall[i][j] = true; used++; }
-    }
-  }
-
-  // Where the ink really is, per lattice line. The grid is idealised; content
-  // has to be sampled where the pixels actually sit, so keep the MEASURED
-  // position of the junctions that produced each line.
-  const inkAt = (arr, axis, gaxis) => arr.map(at => {
-    const on = G.pts.filter((p, i) => G.inMain.has(i) && p[gaxis] === at);
-    if (!on.length) return at;
-    const s = on.map(p => p[axis]).sort((m, n) => m - n);
-    return s[s.length >> 1];          // median of the measured positions
+  const cells = F.cells.map(f => {
+    const ps = f.nodes.map(i => G.pts[i]);
+    // Geometry from the MEASURED positions: this box is where the ink is, so
+    // fillCells samples the real pixels rather than an idealised grid.
+    const x0 = Math.min(...ps.map(p => p.x)), x1 = Math.max(...ps.map(p => p.x));
+    const y0 = Math.min(...ps.map(p => p.y)), y1 = Math.max(...ps.map(p => p.y));
+    // straightened bounds, for the row/column lookup
+    const gx0 = Math.min(...ps.map(p => p.gx)), gx1 = Math.max(...ps.map(p => p.gx));
+    const gy0 = Math.min(...ps.map(p => p.gy)), gy1 = Math.max(...ps.map(p => p.gy));
+    const c0 = near(xs, gx0), c1 = near(xs, gx1);
+    const r0 = near(ys, gy0), r1 = near(ys, gy1);
+    return {
+      row: r0, col: c0,
+      rowspan: Math.max(1, r1 - r0), colspan: Math.max(1, c1 - c0),
+      x0, x1, y0, y1,
+      corners: f.turns, nodes: f.nodes.length, area: f.area,
+      // the junctions where the boundary actually turns, so the picture marks
+      // corners rather than every junction the walk passed through
+      pts: ps.filter((p, i) => {
+        const prev = ps[(i - 1 + ps.length) % ps.length], next = ps[(i + 1) % ps.length];
+        return (prev.y === p.y) !== (p.y === next.y);
+      }).map(p => ({ x: p.x, y: p.y })),
+      // four turns is a rectangle, however many junctions sit along its sides.
+      // More than four is an L or a T, which HTML's rowspan/colspan cannot
+      // express — worth flagging rather than hiding.
+      rect: f.turns === 4,
+    };
   });
-  const ixs = inkAt(xs, 'x', 'gx'), iys = inkAt(ys, 'y', 'gy');
-
-  // flood the open interior: a flood cannot cross a wall, so it stops at the
-  // cell boundaries and a merged cell comes out as one region
-  const lab = Array.from({ length: ny }, () => new Array(nx).fill(-1));
-  const cells = [];
-  for (let i = 0; i < ny; i++) {
-    for (let j = 0; j < nx; j++) {
-      if (lab[i][j] >= 0) continue;
-      const n = cells.length, stack = [[i, j]], mem = [];
-      lab[i][j] = n;
-      while (stack.length) {
-        const [r, c] = stack.pop();
-        mem.push([r, c]);
-        if (c + 1 < nx && !vwall[r][c + 1] && lab[r][c + 1] < 0) { lab[r][c + 1] = n; stack.push([r, c + 1]); }
-        if (c - 1 >= 0 && !vwall[r][c] && lab[r][c - 1] < 0) { lab[r][c - 1] = n; stack.push([r, c - 1]); }
-        if (r + 1 < ny && !hwall[r + 1][c] && lab[r + 1][c] < 0) { lab[r + 1][c] = n; stack.push([r + 1, c]); }
-        if (r - 1 >= 0 && !hwall[r][c] && lab[r - 1][c] < 0) { lab[r - 1][c] = n; stack.push([r - 1, c]); }
-      }
-      const r0 = Math.min(...mem.map(m => m[0])), r1 = Math.max(...mem.map(m => m[0]));
-      const c0 = Math.min(...mem.map(m => m[1])), c1 = Math.max(...mem.map(m => m[1]));
-      cells.push({
-        row: r0, col: c0, rowspan: r1 - r0 + 1, colspan: c1 - c0 + 1,
-        // grid box — the idealised lattice. Structure, spans, layout.
-        x0: xs[c0], x1: xs[c1 + 1], y0: ys[r0], y1: ys[r1 + 1],
-        // ink box — where the pixels actually are. fillCells samples THIS, so a
-        // few px of straightening never clips a glyph or pulls in a rule.
-        ix0: ixs[c0], ix1: ixs[c1 + 1], iy0: iys[r0], iy1: iys[r1 + 1],
-        units: mem.length,
-        rect: mem.length === (r1 - r0 + 1) * (c1 - c0 + 1),
-      });
-    }
-  }
   cells.sort((p, q) => p.row - q.row || p.col - q.col);
+
   const table = {
-    xs, ys, ixs, iys, rows: ny, cols: nx, cells,
+    xs, ys, rows: Math.max(1, ys.length - 1), cols: Math.max(1, xs.length - 1),
+    cells,
     spans: cells.filter(c => c.rowspan > 1 || c.colspan > 1).length,
     ragged: cells.filter(c => !c.rect).length,
-    wallSpans: used,
+    faces: F.faces.length, outer: F.outer.length,
+    // a directed edge belongs to exactly one face; any left over is a dangling
+    // edge that encloses nothing
+    dangling: F.live * 2 - F.faces.reduce((n, f) => n + f.nodes.length, 0),
   };
   fillCells(table, a.ink, a.w, a.h);
-  return { G, table };
+  return { G, table, faces: F };
 }
 
 // Side by side: the untouched crop on the left, the extracted table on the
@@ -2669,9 +2733,11 @@ function graphTableCanvas(a, reach, sel) {
 
   // tableFromGraph rebuilds on every render, so a stored cell is never the same
   // OBJECT as the one being drawn — compare by lattice position instead
+  // match on geometry: row/col indices are derived and need not be unique on a
+  // table that is not a rectangle, but a face's box is
   const isSel = cell => sel && sel.cell &&
-    cell.row === sel.cell.row && cell.col === sel.cell.col &&
-    cell.rowspan === sel.cell.rowspan && cell.colspan === sel.cell.colspan;
+    cell.x0 === sel.cell.x0 && cell.y0 === sel.cell.y0 &&
+    cell.x1 === sel.cell.x1 && cell.y1 === sel.cell.y1;
 
   // On the SCAN: each junction where the pixels put it, with a tick to the line
   // it was straightened onto. The correction is what makes the grid buildable,
@@ -2735,10 +2801,11 @@ function graphTableCanvas(a, reach, sel) {
       ctx.strokeRect(cell.x0 + lw, cell.y0 + lw, cw - lw * 2, ch - lw * 2);
       ctx.strokeStyle = 'rgba(0,0,0,.75)'; ctx.lineWidth = lw;
       ctx.strokeRect(cell.x0 - lw, cell.y0 - lw, cw + lw * 2, ch + lw * 2);
+      // the face's actual corner junctions — an L-shaped cell has five or more,
+      // and they sit where the pixels are, not at the corners of a bounding box
       ctx.fillStyle = '#1565c0';
-      for (const [px, py] of [[cell.x0, cell.y0], [cell.x1, cell.y0],
-                              [cell.x0, cell.y1], [cell.x1, cell.y1]]) {
-        ctx.beginPath(); ctx.arc(px, py, r * 1.8, 0, Math.PI * 2); ctx.fill();
+      for (const p of (cell.pts || [])) {
+        ctx.beginPath(); ctx.arc(p.x, p.y, r * 1.8, 0, Math.PI * 2); ctx.fill();
       }
       ctx.restore();
     }
