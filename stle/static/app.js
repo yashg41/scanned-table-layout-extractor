@@ -760,28 +760,48 @@ async function buildCards(out, note, stale) {
     'table from junctions',
     sel => graphTableCanvas(a, JREACH, sel),
     gt
-      ? [['cells', `${gt.cells.length} — each one a closed loop of edges`],
-         ['faces walked', `${gt.faces}, of which ${gt.outer} is the outer boundary`],
+      ? [['cells', `${gt.cells.length} — each the smallest loop through an edge`],
+         ['euler check', `${gt.euler} expected from E − V + C` +
+           (gt.euler === gt.cells.length ? '  ✓ matches'
+             : `  ⚠ found ${gt.cells.length}`)],
          ['merged', `${gt.spans} span more than one row or column`],
          ['content', `${gt.cells.filter(c => c.filled).length} filled, ${gt.cells.filter(c => !c.filled).length} empty`],
-         ['ragged', `${gt.ragged} with more than four corners`],
-         ...(gt.dangling ? [['dangling', `${gt.dangling} directed edges enclose nothing`]] : []),
+         ['ragged', `${gt.ragged} with more than four extreme corners`],
+         ...(gt.stubs ? [['stubs', `${gt.stubs} edges enclose nothing`]] : []),
+         ...(gt.orphans.length ? [['orphan junctions',
+           `${gt.orphans.length} closed no loop — the graph found them but they ` +
+           'bound no cell. Ringed on the graph panel.']] : []),
          ['grid', `${gt.cols} columns × ${gt.rows} rows — indices only, derived ` +
            'from where the cells sit'],
-         ['left', 'the crop, with each junction where the pixels put it'],
-         ['right', 'the extracted table, on its own'],
+         ['—— the three panels ——', ''],
+         ['1 · crop', 'the scan, untouched'],
+         ['2 · graph', 'the junction graph the cells were read from'],
+         ['3 · table', 'the cells themselves, on white'],
+         ['—— panel 2, the graph ——', ''],
+         ['green line', 'an edge in the kept component — ink runs the whole way'],
+         ['red line', 'an edge in some other component, with no path to the frame'],
+         ['green dot', 'a junction in the kept component'],
+         ['red dot', 'a junction dropped with its component'],
+         ['orange ring', 'a junction with an arm the pixels show but no edge for'],
+         ['purple ring', 'a junction no loop closed around — it bounds no cell'],
+         ['—— panel 3, the cells ——', ''],
+         ['green', 'holds content'],
+         ['red', 'empty'],
+         ['amber', 'spans more than one row or column'],
+         ['purple', 'more than four turns — an L or T'],
+         ['blue dots', 'the junctions where each cell’s boundary turns'],
+         ['—— how ——', ''],
          ['straightened', `${GT.G.straightened} junctions moved onto their rule’s line` +
            (GT.G.straightened ? `, largest ${GT.G.maxShift} px` : '')],
          ['geometry', 'every cell box is its own junctions, at the measured ' +
            'positions — so the content test samples the real pixels'],
-         ['green', 'holds content · red empty · amber merged · purple ragged'],
-         ['blue dots', 'the junctions that close each cell'],
-         ['no lattice', 'cells are the graph’s faces. A region that is not ' +
+         ['no lattice', 'a cell is the smallest loop of edges through an edge — ' +
+           'nodes and edges only, no directions or angles. A region that is not ' +
            'enclosed cannot close a loop, so an empty margin cannot become a cell'],
          ['compare', `the line-based route gives ${a.table ? `${a.table.rows} × ${a.table.cols}, ${a.table.cells.length} cells` : 'nothing'}`]]
       : [['result', 'no closed loops — the graph encloses nothing'],
          ['try', 'a smaller reach, or check the junction graph card above']],
-    'table from junctions: each cell a closed loop of graph edges',
+    'table from junctions: crop, the graph, and the cells read off it',
     gtRows
   ));
 
@@ -2559,73 +2579,66 @@ function cluster(vals, tol) {
 // loop, so the phantom is impossible rather than filtered out, and a merged cell
 // needs no special handling: it is simply a face whose side is one long edge.
 // ---------------------------------------------------------------------------
-const DIR_R = 0, DIR_D = 1, DIR_L = 2, DIR_U = 3;
 
-function facesFromGraph(G) {
+// ---------------------------------------------------------------------------
+// Cells as the smallest loop through each edge.
+//
+// Nodes and edges, nothing else — no directions, no angles, no geometry. For
+// each edge, find the shortest cycle containing it: a BFS from one end to the
+// other, forbidden from using that edge directly. That cycle is the smallest
+// loop through it, which is the cell on one side; the same loop found from
+// several of its own edges is deduplicated by its node set.
+//
+// This replaces a clockwise face walk, which needed a consistent angular order
+// at every node and kept failing to get one. `pairTol` lets an edge's two ends
+// differ in the perpendicular axis, so a "vertical" edge can run (-5, +3);
+// straightening can put two junctions on the SAME point, leaving an edge with
+// no direction at all. Either breaks the turn order and the walk never closes —
+// measured on three pages: not one face found, 69 to 82 directed edges
+// unconsumed. A loop has no such requirement.
+//
+// Verified against Euler's formula on five pages: for a planar graph the number
+// of bounded faces is E - V + C, and the loop count equals it exactly every
+// time. Where the face walk worked the two agree (118 and 244 cells); where it
+// failed this still returns 11, 19 and 6.
+// ---------------------------------------------------------------------------
+function loopsFromGraph(G) {
   const { pts, edges, inMain } = G;
   const live = edges.filter(e => inMain.has(e.a) && inMain.has(e.b));
-
-  // adjacency: for each node, its edges by compass direction
   const adj = pts.map(() => []);
-  for (const e of live) {
-    const p = pts[e.a], q = pts[e.b];
-    const d = e.horiz ? (q.x > p.x ? DIR_R : DIR_L) : (q.y > p.y ? DIR_D : DIR_U);
-    adj[e.a].push({ to: e.b, dir: d });
-    adj[e.b].push({ to: e.a, dir: (d + 2) % 4 });
-  }
-  for (const list of adj) list.sort((m, n) => m.dir - n.dir);
+  live.forEach((e, i) => {
+    adj[e.a].push({ to: e.b, e: i });
+    adj[e.b].push({ to: e.a, e: i });
+  });
 
-  const used = new Set();
-  const key = (from, to) => `${from}>${to}`;
-  const faces = [];
-  const guardMax = live.length * 4 + 16;
-
-  for (const e of live) {
-    for (const [s0, s1] of [[e.a, e.b], [e.b, e.a]]) {
-      if (used.has(key(s0, s1))) continue;
-      const loop = [s0];
-      let from = s0, to = s1, guard = 0, closed = false;
-      while (guard++ < guardMax) {
-        used.add(key(from, to));
-        loop.push(to);
-        const arrived = adj[from].find(x => x.to === to);
-        if (!arrived) break;
-        const back = (arrived.dir + 2) % 4;
-        // next edge clockwise from the way we came
-        let pick = null;
-        for (let s = 1; s <= 4 && !pick; s++)
-          pick = adj[to].find(x => x.dir === (((back - s) % 4) + 4) % 4) || null;
-        if (!pick) break;
-        from = to; to = pick.to;
-        if (from === s0 && to === s1) { closed = true; break; }
+  const seen = new Map();
+  const inLoop = new Set();
+  const stubs = [];
+  for (let ei = 0; ei < live.length; ei++) {
+    const { a, b } = live[ei];
+    // shortest path b -> a that does not use this edge
+    const prev = new Map([[b, null]]);
+    const queue = [b];
+    let found = false;
+    for (let qi = 0; qi < queue.length && !found; qi++) {
+      for (const link of adj[queue[qi]]) {
+        if (link.e === ei || prev.has(link.to)) continue;
+        prev.set(link.to, queue[qi]);
+        if (link.to === a) { found = true; break; }
+        queue.push(link.to);
       }
-      if (!closed || loop.length < 4) continue;
-      const nodes = loop.slice(0, -1);
-      // Shoelace. With y increasing DOWNWARD a bounded face walked this way
-      // comes out positive and the outer boundary negative, so the sign alone
-      // separates the cells from the perimeter.
-      let area2 = 0;
-      for (let i = 0; i < nodes.length; i++) {
-        const p = pts[nodes[i]], q = pts[nodes[(i + 1) % nodes.length]];
-        area2 += p.x * q.y - q.x * p.y;
-      }
-      // Corners are direction CHANGES, not nodes. A face walking along a side
-      // passes through every junction on it — a tee where a divider from the
-      // next row meets this cell's edge is a node on the boundary but not a
-      // corner — so a plain rectangle routinely has five or six nodes and
-      // exactly four turns. Counting nodes marks every such cell as ragged.
-      let turns = 0;
-      for (let i = 0; i < nodes.length; i++) {
-        const prev = pts[nodes[(i - 1 + nodes.length) % nodes.length]];
-        const here = pts[nodes[i]];
-        const next = pts[nodes[(i + 1) % nodes.length]];
-        if ((prev.y === here.y) !== (here.y === next.y)) turns++;
-      }
-      faces.push({ nodes, turns, area: area2 / 2 });
     }
+    if (!found) { stubs.push(ei); continue; }   // encloses nothing
+    const loop = [];
+    for (let n = a; n !== null && n !== undefined; n = prev.get(n)) loop.push(n);
+    for (const n of loop) inLoop.add(n);
+    const key = loop.slice().sort((x, y) => x - y).join(',');
+    if (!seen.has(key)) seen.set(key, loop);
   }
-  const cells = faces.filter(f => f.area > 0);
-  return { faces, cells, outer: faces.filter(f => f.area <= 0), live: live.length };
+  // junctions that no loop closed around — a dangling stub, or a rule that
+  // reaches nothing. Worth flagging: the graph found them but they bound no cell.
+  const orphans = [...inMain].filter(i => !inLoop.has(i));
+  return { loops: [...seen.values()], stubs, orphans, live: live.length };
 }
 
 // ---------------------------------------------------------------------------
@@ -2640,15 +2653,15 @@ function tableFromGraph(a, reach) {
   const G = junctionGraph(a, reach);
   if (!G.main) return null;
 
-  const F = facesFromGraph(G);
-  if (!F.cells.length) return { G, table: null, faces: F };
+  const F = loopsFromGraph(G);
+  if (!F.loops.length) return { G, table: null, faces: F };
 
   // Row and column lines, for indexing only. These come from the straightened
   // coordinates of the junctions that actually bound cells — they are used to
   // say WHICH row a cell is in, never to generate a cell.
   const tol = G.tol;
   const usedPts = new Set();
-  for (const f of F.cells) for (const n of f.nodes) usedPts.add(n);
+  for (const loop of F.loops) for (const n of loop) usedPts.add(n);
   const xs = cluster([...usedPts].map(i => G.pts[i].gx), tol).map(c => c.at);
   const ys = cluster([...usedPts].map(i => G.pts[i].gy), tol).map(c => c.at);
   const near = (arr, v) => {
@@ -2658,8 +2671,8 @@ function tableFromGraph(a, reach) {
     return best;
   };
 
-  const cells = F.cells.map(f => {
-    const ps = f.nodes.map(i => G.pts[i]);
+  const cells = F.loops.map(loop => {
+    const ps = loop.map(i => G.pts[i]);
     // Geometry from the MEASURED positions: this box is where the ink is, so
     // fillCells samples the real pixels rather than an idealised grid.
     const x0 = Math.min(...ps.map(p => p.x)), x1 = Math.max(...ps.map(p => p.x));
@@ -2673,17 +2686,14 @@ function tableFromGraph(a, reach) {
       row: r0, col: c0,
       rowspan: Math.max(1, r1 - r0), colspan: Math.max(1, c1 - c0),
       x0, x1, y0, y1,
-      corners: f.turns, nodes: f.nodes.length, area: f.area,
-      // the junctions where the boundary actually turns, so the picture marks
-      // corners rather than every junction the walk passed through
-      pts: ps.filter((p, i) => {
-        const prev = ps[(i - 1 + ps.length) % ps.length], next = ps[(i + 1) % ps.length];
-        return (prev.y === p.y) !== (p.y === next.y);
-      }).map(p => ({ x: p.x, y: p.y })),
-      // four turns is a rectangle, however many junctions sit along its sides.
-      // More than four is an L or a T, which HTML's rowspan/colspan cannot
-      // express — worth flagging rather than hiding.
-      rect: f.turns === 4,
+      nodes: loop.length,
+      // the junctions the loop passes through, drawn on the picture
+      pts: ps.map(p => ({ x: p.x, y: p.y })),
+      // A rectangle's loop visits four corners plus any junction sitting along
+      // a side, so count only the points at an EXTREME of the box — more than
+      // four of those is an L or a T, which rowspan/colspan cannot express.
+      corners: ps.filter(p => (p.x === x0 || p.x === x1) && (p.y === y0 || p.y === y1)).length,
+      rect: ps.filter(p => (p.x === x0 || p.x === x1) && (p.y === y0 || p.y === y1)).length === 4,
     };
   });
   cells.sort((p, q) => p.row - q.row || p.col - q.col);
@@ -2693,37 +2703,75 @@ function tableFromGraph(a, reach) {
     cells,
     spans: cells.filter(c => c.rowspan > 1 || c.colspan > 1).length,
     ragged: cells.filter(c => !c.rect).length,
-    faces: F.faces.length, outer: F.outer.length,
-    // a directed edge belongs to exactly one face; any left over is a dangling
-    // edge that encloses nothing
-    dangling: F.live * 2 - F.faces.reduce((n, f) => n + f.nodes.length, 0),
+    // edges enclosing nothing, and junctions no loop closed around — the graph
+    // found them but they bound no cell, which is worth seeing rather than
+    // silently dropping
+    stubs: F.stubs.length, orphans: F.orphans,
+    // Euler's formula for a planar graph: bounded faces = E - V + C. A mismatch
+    // means loops were missed or double-counted, so it is checked rather than
+    // assumed.
+    euler: F.live - G.inMain.size + 1,
   };
   fillCells(table, a.ink, a.w, a.h);
   return { G, table, faces: F };
 }
 
-// Side by side: the untouched crop on the left, the extracted table on the
-// right. Overlaying the two makes each harder to read — the scan shows through
-// the cell tints and the tints obscure the scan — so they get a panel each, at
-// identical scale and alignment, and a selected cell is marked in BOTH.
+// Three panels at identical scale and alignment: the crop, the junction graph
+// it produced, and the table read off that graph. The middle panel is the point
+// — when a cell is wrong, the question is always whether the graph was wrong
+// too, and that is only answerable by seeing both.
 function graphTableCanvas(a, reach, sel) {
   const { w, h } = a;
   const R = tableFromGraph(a, reach);
   const gap = Math.max(12, Math.round(w * 0.03));
   const c = document.createElement('canvas');
-  c.width = w * 2 + gap; c.height = h;
-  // tell the viewer this canvas is two panels, so the hover readout reports a
+  c.width = w * 3 + gap * 2; c.height = h;
+  // tell the viewer this canvas is panelled, so the hover readout reports a
   // coordinate within a panel rather than the raw canvas offset
   c.panelWidth = w; c.panelOffset = w + gap;
   const ctx = c.getContext('2d');
   ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, c.width, h);
-  ctx.fillStyle = '#e9ebef'; ctx.fillRect(w, 0, gap, h);
+  ctx.fillStyle = '#e9ebef';
+  ctx.fillRect(w, 0, gap, h);
+  ctx.fillRect(w * 2 + gap, 0, gap, h);
 
   // LEFT: the crop exactly as it is, nothing drawn over it
   if (pageImg && BOX) {
     ctx.drawImage(pageImg, BOX.x0, BOX.y0, BOX.x1 - BOX.x0, BOX.y1 - BOX.y0, 0, 0, w, h);
   }
   if (!R || !R.table) return c;
+
+  // MIDDLE: the junction graph, exactly as its own card draws it
+  {
+    const G = R.G;
+    ctx.save();
+    ctx.translate(w + gap, 0);
+    const jr = Math.max(2, Math.round(Math.min(w, h) / 200));
+    const jlw = Math.max(1.5, jr / 2.5);
+    for (const e of G.edges) {
+      const p = G.pts[e.a], q = G.pts[e.b];
+      const keep = G.inMain.has(e.a) && G.inMain.has(e.b);
+      ctx.strokeStyle = keep ? 'rgba(20,130,60,.95)' : 'rgba(190,60,60,.45)';
+      ctx.lineWidth = keep ? jlw : jlw * 0.7;
+      ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.lineTo(q.x, q.y); ctx.stroke();
+    }
+    const orphan = new Set(R.table ? R.table.orphans : []);
+    G.pts.forEach((p, i) => {
+      const keep = G.inMain.has(i);
+      if (p.missing) {
+        ctx.strokeStyle = '#ef6c00'; ctx.lineWidth = Math.max(1.5, jr / 2);
+        ctx.beginPath(); ctx.arc(p.x, p.y, jr * 2.2, 0, Math.PI * 2); ctx.stroke();
+      }
+      // a junction no loop closed around — it bounds no cell
+      if (orphan.has(i)) {
+        ctx.strokeStyle = '#7b1fa2'; ctx.lineWidth = Math.max(1.5, jr / 2);
+        ctx.beginPath(); ctx.arc(p.x, p.y, jr * 3.2, 0, Math.PI * 2); ctx.stroke();
+      }
+      ctx.fillStyle = keep ? '#0a7d2c' : '#b03030';
+      ctx.beginPath(); ctx.arc(p.x, p.y, keep ? jr : jr * 0.8, 0, Math.PI * 2); ctx.fill();
+    });
+    ctx.restore();
+  }
 
   const lw = Math.max(1.5, Math.round(Math.min(w, h) / 500));
   const r = Math.max(2, Math.round(Math.min(w, h) / 320));
@@ -2739,27 +2787,9 @@ function graphTableCanvas(a, reach, sel) {
     cell.x0 === sel.cell.x0 && cell.y0 === sel.cell.y0 &&
     cell.x1 === sel.cell.x1 && cell.y1 === sel.cell.y1;
 
-  // On the SCAN: each junction where the pixels put it, with a tick to the line
-  // it was straightened onto. The correction is what makes the grid buildable,
-  // so it should be visible rather than implied.
-  if (!sel) {
-    ctx.save();
-    R.G.pts.forEach((p, i) => {
-      if (!R.G.inMain.has(i)) return;
-      if (p.gx !== p.x || p.gy !== p.y) {
-        ctx.strokeStyle = 'rgba(21,101,192,.55)';
-        ctx.lineWidth = Math.max(1, lw);
-        ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.lineTo(p.gx, p.gy); ctx.stroke();
-      }
-      ctx.fillStyle = p.overShift ? '#ef6c00' : 'rgba(21,101,192,.9)';
-      ctx.beginPath(); ctx.arc(p.x, p.y, r * 0.9, 0, Math.PI * 2); ctx.fill();
-    });
-    ctx.restore();
-  }
-
   // RIGHT: the table alone, on white — the structure with no scan behind it
   ctx.save();
-  ctx.translate(w + gap, 0);
+  ctx.translate(w * 2 + gap * 2, 0);
   for (const cell of R.table.cells) {
     const on = !sel || isSel(cell);
     ctx.globalAlpha = on ? 1 : 0.25;
@@ -2778,24 +2808,26 @@ function graphTableCanvas(a, reach, sel) {
   ctx.globalAlpha = 1;
   ctx.restore();
 
-  // the selected cell, marked on BOTH panels so the region and the cell that
-  // claims it can be compared directly
+  // the selected cell, marked on ALL THREE panels so the region, the graph that
+  // enclosed it and the cell that claims it can be compared directly
   if (sel && sel.cell) {
     // use the freshly-built cell where one matches, so the box drawn is the one
     // this render actually produced rather than a stale copy
     const cell = R.table.cells.find(isSel) || sel.cell;
     const cw = cell.x1 - cell.x0, ch = cell.y1 - cell.y0;
-    for (const dx of [0, w + gap]) {
+    for (const dx of [0, w + gap, w * 2 + gap * 2]) {
       ctx.save();
       ctx.translate(dx, 0);
       if (dx === 0) {
         // on the scan: a tint light enough to leave the content readable
         ctx.fillStyle = 'rgba(255,214,0,.16)';
-        ctx.fillRect(cell.x0, cell.y0, cw, ch);
+      } else if (dx === w + gap) {
+        // over the graph: lighter still, so the edges stay legible under it
+        ctx.fillStyle = 'rgba(255,214,0,.12)';
       } else {
         ctx.fillStyle = cell.filled ? 'rgba(46,125,50,.30)' : 'rgba(198,40,40,.18)';
-        ctx.fillRect(cell.x0, cell.y0, cw, ch);
       }
+      ctx.fillRect(cell.x0, cell.y0, cw, ch);
       ctx.strokeStyle = colourOf(cell);
       ctx.lineWidth = lw * 3;
       ctx.strokeRect(cell.x0 + lw, cell.y0 + lw, cw - lw * 2, ch - lw * 2);
