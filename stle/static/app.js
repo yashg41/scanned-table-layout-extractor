@@ -741,7 +741,8 @@ async function buildCards(out, note, stale) {
           : (cell.rowspan > 1 || cell.colspan > 1) ? '#c07000'
           : cell.filled ? '#2e7d32' : '#b03030',
     label: `r${cell.row} c${cell.col}` +
-      ((cell.rowspan > 1 || cell.colspan > 1) ? ` · ${cell.rowspan}×${cell.colspan}` : ''),
+      ((cell.rowspan > 1 || cell.colspan > 1) ? ` · ${cell.rowspan}×${cell.colspan}` : '') +
+      (cell.holes && cell.holes.length ? ` −${cell.holes.length}` : ''),
     note: cell.filled ? 'filled' : 'empty',
     dims: [
       ['cell', `row ${cell.row}, col ${cell.col}`],
@@ -749,6 +750,14 @@ async function buildCards(out, note, stale) {
       ['box', `${cell.x0},${cell.y0} → ${cell.x1},${cell.y1}`],
       ['corners', `${cell.corners} turns, from ${cell.nodes} junctions on the ` +
         'boundary — a junction the side passes through is not a corner'],
+      ...(cell.holes && cell.holes.length ? [
+        ['contains', `${cell.holes.length} cell${cell.holes.length > 1 ? 's' : ''} — ` +
+          cell.holes.map(o => `${o.rowspan}×${o.colspan} at ${o.x0},${o.y0}`).join('; ')],
+        ['so really', `${cell.rowspan}×${cell.colspan} minus ` +
+          cell.holes.map(o => `${o.rowspan}×${o.colspan}`).join(' and ')],
+        ['net area', `${cell.netArea.toLocaleString()} px of ` +
+          `${((cell.x1 - cell.x0) * (cell.y1 - cell.y0)).toLocaleString()}`],
+      ] : []),
       ['size', `${cell.x1 - cell.x0} × ${cell.y1 - cell.y0} px`],
       ['content', cell.filled ? 'holds ink' : 'empty'],
       ['ink in it', `${((cell.ink || 0) * 100).toFixed(1)}% of the cell, in ${cell.blobs || 0} blob${cell.blobs === 1 ? '' : 's'}`],
@@ -771,6 +780,10 @@ async function buildCards(out, note, stale) {
          ['merged', `${gt.spans} span more than one row or column`],
          ['content', `${gt.cells.filter(c => c.filled).length} filled, ${gt.cells.filter(c => !c.filled).length} empty`],
          ['ragged', `${gt.ragged} with more than four extreme corners`],
+         ...(gt.cells.some(c => c.holes.length) ? [['nested',
+           `${gt.cells.filter(c => c.holes.length).length} cells contain others — ` +
+           'reported as the outer minus its inners, and their content is not ' +
+           'counted twice. Marked ⌧ on the cells panel.']] : []),
          ...(gt.stubs ? [['stubs', `${gt.stubs} edges enclose nothing`]] : []),
          ...(gt.orphans.length ? [['orphan junctions',
            `${gt.orphans.length} closed no loop — the graph found them but they ` +
@@ -2705,6 +2718,32 @@ function tableFromGraph(a, reach) {
   });
   cells.sort((p, q) => p.row - q.row || p.col - q.col);
 
+  // A cell contains no other cell.
+  //
+  // BFS returns the SHORTEST cycle through an edge, and where the true boundary
+  // is long a shorter path exists that cuts across the interior — so a loop can
+  // come back enclosing other cells. Seen on a title block: a 5x4 region whose
+  // loop detoured around two 1x2 boxes in its top-right corner and reported
+  // them as part of itself, with 3 turns from 9 junctions where a rectangle
+  // needs 4. (Euler's check passed throughout: the COUNT was right, the loops
+  // were not.)
+  //
+  // So mark what each cell properly contains. Only the immediate children, so a
+  // nested stack is not subtracted twice, and the cell then describes itself as
+  // the outer region minus those inners.
+  const encloses = (outer, inner) =>
+    inner.x0 >= outer.x0 && inner.x1 <= outer.x1 &&
+    inner.y0 >= outer.y0 && inner.y1 <= outer.y1 &&
+    (inner.x1 - inner.x0) * (inner.y1 - inner.y0) <
+    (outer.x1 - outer.x0) * (outer.y1 - outer.y0);
+  cells.forEach((c, i) => {
+    const all = cells.filter((o, j) => j !== i && encloses(c, o));
+    // drop any that sits inside another of them — keep the immediate children
+    c.holes = all.filter(o => !all.some(p => p !== o && encloses(p, o)));
+    c.netArea = (c.x1 - c.x0) * (c.y1 - c.y0) -
+      c.holes.reduce((s, o) => s + (o.x1 - o.x0) * (o.y1 - o.y0), 0);
+  });
+
   const table = {
     xs, ys, rows: Math.max(1, ys.length - 1), cols: Math.max(1, xs.length - 1),
     cells,
@@ -2818,6 +2857,20 @@ function graphTableCanvas(a, reach, sel) {
     ctx.strokeStyle = colourOf(cell);
     ctx.lineWidth = (cell.rowspan > 1 || cell.colspan > 1 || !cell.rect) ? lw * 2 : lw;
     ctx.strokeRect(cell.x0 + .5, cell.y0 + .5, cell.x1 - cell.x0 - 1, cell.y1 - cell.y0 - 1);
+    // a cell containing others is hatched over the part that is not its own,
+    // so the subtraction is visible rather than only stated in the panel
+    for (const o of cell.holes) {
+      ctx.save();
+      ctx.beginPath(); ctx.rect(o.x0, o.y0, o.x1 - o.x0, o.y1 - o.y0); ctx.clip();
+      ctx.strokeStyle = 'rgba(123,31,162,.5)'; ctx.lineWidth = lw;
+      const step = Math.max(6, lw * 6);
+      ctx.beginPath();
+      for (let d = -(o.y1 - o.y0); d < (o.x1 - o.x0); d += step) {
+        ctx.moveTo(o.x0 + d, o.y0); ctx.lineTo(o.x0 + d + (o.y1 - o.y0), o.y1);
+      }
+      ctx.stroke();
+      ctx.restore();
+    }
   }
   ctx.globalAlpha = sel ? 0.3 : 1;
   ctx.fillStyle = '#1565c0';
@@ -3438,7 +3491,20 @@ function fillCells(table, ink, w, h) {
 
     // flood each blob once, tracking its area and bounding box
     const seen = new Uint8Array(sw * sh);
-    const area = sw * sh;
+    // Pre-mark anything inside a contained cell as already visited, so its
+    // content counts for that cell and not for this one. Without it a region
+    // enclosing other cells reports their ink as its own.
+    let holeArea = 0;
+    for (const o of (c.holes || [])) {
+      const hx0 = Math.max(0, (o.ix0 !== undefined ? o.ix0 : o.x0) - x0);
+      const hx1 = Math.min(sw, (o.ix1 !== undefined ? o.ix1 : o.x1) - x0);
+      const hy0 = Math.max(0, (o.iy0 !== undefined ? o.iy0 : o.y0) - y0);
+      const hy1 = Math.min(sh, (o.iy1 !== undefined ? o.iy1 : o.y1) - y0);
+      for (let y = hy0; y < hy1; y++)
+        for (let x = hx0; x < hx1; x++)
+          if (!seen[y * sw + x]) { seen[y * sw + x] = 1; holeArea++; }
+    }
+    const area = Math.max(1, sw * sh - holeArea);
     const minArea = Math.max(6, Math.round(area * BLOB_MIN));
     const stack = [];
     let total = 0;
