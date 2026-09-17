@@ -797,8 +797,9 @@ async function buildCards(out, note, stale) {
          ['switching', 'the crop / graph / cells buttons in the header show any ' +
            'one, two or all three — one to study, two to compare, three for the ' +
            'overview. The zoom and position are held while you switch.'],
-         ['arrangement', 'follows the crop’s shape: a wide crop stacks, a tall one ' +
-           'goes side by side, and three panels of a squarish crop tile in an L'],
+         ['arrangement', 'whichever tiling renders the panels largest in the ' +
+           'window you have — stacked, abreast, or an L — so a wide crop in a ' +
+           'wide window does not stack and waste the width'],
          ['hovering', 'points at the same spot on every panel at once — crosshairs ' +
            'plus the cell under the cursor, so the crop, the graph and the cells ' +
            'can be read against each other'],
@@ -2792,15 +2793,35 @@ function graphTableCanvas(a, reach, sel) {
   const shown = [];
   for (let i = 0; i < 3; i++) if (want[i]) shown.push(i);
   const n = shown.length;
-  const wide = w > h * 1.3;          // much wider than tall
-  const tall = h > w * 1.3;
-  let grid;                          // [col, row] per shown panel, and the span
-  if (n === 1) grid = { cells: [[0, 0]], cols: 1, rows: 1 };
-  else if (n === 2) grid = wide ? { cells: [[0, 0], [0, 1]], cols: 1, rows: 2 }
-                                : { cells: [[0, 0], [1, 0]], cols: 2, rows: 1 };
-  else if (wide) grid = { cells: [[0, 0], [0, 1], [0, 2]], cols: 1, rows: 3 };
-  else if (tall) grid = { cells: [[0, 0], [1, 0], [2, 0]], cols: 3, rows: 1 };
-  else grid = { cells: [[0, 0], [1, 0], [0, 1]], cols: 2, rows: 2 };   // the L
+
+  // Choose the arrangement that renders the panels LARGEST in the window that
+  // is actually available. Picking it from the crop's shape alone was wrong: a
+  // wide crop in a wide window still stacked, so each panel took a third of the
+  // height while the width sat unused.
+  const layouts = {
+    1: [{ cells: [[0, 0]], cols: 1, rows: 1 }],
+    2: [{ cells: [[0, 0], [0, 1]], cols: 1, rows: 2 },        // stacked
+        { cells: [[0, 0], [1, 0]], cols: 2, rows: 1 }],       // abreast
+    3: [{ cells: [[0, 0], [0, 1], [0, 2]], cols: 1, rows: 3 },
+        { cells: [[0, 0], [1, 0], [2, 0]], cols: 3, rows: 1 },
+        { cells: [[0, 0], [1, 0], [0, 1]], cols: 2, rows: 2 }],  // the L
+  }[n];
+  // The canvas is built BEFORE the viewer is unhidden, so on a first open
+  // #zbody has no size yet — fall back to the window, less the rail and the
+  // header, which is what it will be once shown.
+  const view = $('zbody');
+  const vw = view.clientWidth || (window.innerWidth - 340);
+  const vh = view.clientHeight || (window.innerHeight - 60);
+  const availW = Math.max(200, vw - 40);
+  const availH = Math.max(200, vh - 40);
+  let grid = layouts[0], bestScale = -1;
+  for (const g of layouts) {
+    const cw = g.cols * w + (g.cols - 1) * gap;
+    const ch = g.rows * h + (g.rows - 1) * gap;
+    // how big each panel ends up once the whole tiling is fitted to the window
+    const scale = Math.min(availW / cw, availH / ch);
+    if (scale > bestScale) { bestScale = scale; grid = g; }
+  }
 
   const slot = [-1, -1, -1];         // panel index -> position in `shown`
   shown.forEach((p, k) => { slot[p] = k; });
@@ -3925,10 +3946,12 @@ function canvasToPanel(canvas, x, y) {
   return null;                     // in a gutter
 }
 
-// Redraw at most once per frame. A hover fires on every pointer move, and the
-// canvas is rebuilt from scratch each time, so without this it would rebuild
-// far more often than the screen refreshes.
-function scheduleHoverDraw() {
+// Redraw the open view at most once per frame, holding the zoom and scroll.
+// Used by hovering, which fires on every pointer move, and by a window resize,
+// which changes which tiling fits best — the canvas is rebuilt from scratch
+// each time, so without the throttle it would rebuild far more often than the
+// screen refreshes.
+function scheduleViewDraw() {
   if (hoverPending) return;
   hoverPending = true;
   requestAnimationFrame(() => {
@@ -4001,6 +4024,11 @@ $('zoom').addEventListener('click', e => { if (e.target.id === 'zoom') closeZoom
 // A stacked view can show any one, two or all three of its panels: one to study
 // closely, two to compare, three for the overview. Toggling holds the zoom and
 // the scroll, so the view does not jump while you switch what is beside what.
+// the best tiling depends on the window, so re-evaluate it on a resize
+window.addEventListener('resize', () => {
+  if (!$('zoom').hidden && zRedraw) scheduleViewDraw();
+});
+
 $('zpanels').addEventListener('click', e => {
   const b = e.target.closest('.pn');
   if (!b || !zRedraw) return;
@@ -4052,11 +4080,11 @@ $('zpanels').addEventListener('click', e => {
         // pointing at a cell on one shows you where it is on the others
         if (zHover === null || zHover.x !== hit.x || zHover.y !== hit.y) {
           zHover = { x: hit.x, y: hit.y };
-          if (zRedraw) scheduleHoverDraw();
+          if (zRedraw) scheduleViewDraw();
         }
       } else {
         $('zat').textContent = '';
-        if (zHover) { zHover = null; if (zRedraw) scheduleHoverDraw(); }
+        if (zHover) { zHover = null; if (zRedraw) scheduleViewDraw(); }
       }
     }
     if (!from) return;
@@ -4066,7 +4094,7 @@ $('zpanels').addEventListener('click', e => {
   });
   body.addEventListener('pointerleave', () => {
     $('zat').textContent = '';
-    if (zHover) { zHover = null; if (zRedraw) scheduleHoverDraw(); }
+    if (zHover) { zHover = null; if (zRedraw) scheduleViewDraw(); }
   });
   const end = () => { from = null; body.classList.remove('drag'); };
   body.addEventListener('pointerup', end);
