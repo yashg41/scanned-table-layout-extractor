@@ -16,6 +16,10 @@ let W = 0, H = 0, pageImg = null;
 // pixels, so the pipeline sees the same crop whatever the zoom.
 let PAGEZOOM = null;
 
+// Show only the stages that produce the table, or every stage of every route.
+// Defaults to the short route: the full strip is for working on the pipeline.
+let SHORT_VIEW = true;
+
 // Which panels of a stacked comparison view are shown: crop, graph, cells.
 // One to study something closely, two to compare, three for the overview.
 const PANELS = [true, true, true];
@@ -450,17 +454,44 @@ async function buildCards(out, note, stale) {
     ['of page', `${areaPct.toFixed(1)}% area`],
   ];
 
+  // ---------------------------------------------------------------------
+  // Which stages to show.
+  //
+  // The full strip is every stage of every route, which is what you want when
+  // working on the pipeline and far too much when you only want to see it run.
+  // The short route keeps the path that actually produces the table and drops
+  // the rest — the line-based stages, the per-direction masks, the variant
+  // pickers. Nothing about the pipeline changes; the cards it does not show are
+  // simply not appended.
+  // ---------------------------------------------------------------------
+  const SHORT = ['as extracted', 'enlarged', 'not enlarged', 'darkened', 'binary',
+                 'mended', 'junctions', 'junction graph', 'table from junctions'];
+  const showAll = !SHORT_VIEW;
+  const keep = title => showAll ||
+    SHORT.some(s => title === s || title.startsWith(s + ' '));
+  // append a card only when its stage is in the chosen set; an arrow is kept
+  // only if the card that follows it is
+  let pendingArrow = null;
+  const add = (el, title) => {
+    if (title === undefined) { pendingArrow = el; return; }   // an arrow or fork
+    if (!keep(title)) { pendingArrow = null; return; }
+    if (pendingArrow && out.children.length) out.appendChild(pendingArrow);
+    pendingArrow = null;
+    out.appendChild(el);
+  };
+
   // 1 · straight out of the page, untouched
-  out.appendChild(card(
+  add(card(
     'as extracted',
     () => cropCanvas(b, 1, 'off'),
     dims,
     `as extracted, ${bw} × ${bh} px`
-  ));
+  ),
+    'as extracted');
 
   // 2 · enlarged if it is small enough to need it, otherwise say so
-  out.appendChild(arrow(k > 1 ? 'enlarge' : 'size check'));
-  out.appendChild(card(
+  add(arrow(k > 1 ? 'enlarge' : 'size check'));
+  add(card(
     k > 1 ? `enlarged ×${k.toFixed(1)}` : 'not enlarged',
     () => cropCanvas(b, k, 'off'),
     k > 1
@@ -470,12 +501,13 @@ async function buildCards(out, note, stale) {
       : [['not enlarged', `${areaPct.toFixed(1)}% ≥ ${ENLARGE_BELOW}% of page`],
          ['shown at', `${bw} × ${bh} px`]],
     k > 1 ? `enlarged ×${k.toFixed(2)}` : 'natural size'
-  ));
+  ),
+    k > 1 ? `enlarged ×${k.toFixed(1)}` : 'not enlarged');
 
   // 3 · every pixel toward black, none toward white
   const g = darkenGamma();
-  out.appendChild(arrow('darken'));
-  out.appendChild(card(
+  add(arrow('darken'));
+  add(card(
     'darkened',
     () => cropCanvas(b, k, 'darken'),
     [['curve', g > 1 ? `gamma ×${g.toFixed(1)}` : 'off — raw scan'],
@@ -484,18 +516,20 @@ async function buildCards(out, note, stale) {
         ? `grey 150 → ${darkenValue(150, g)}, 90 → ${darkenValue(90, g)}`
         : 'unchanged']],
     'darkened'
-  ));
+  ),
+    'darkened');
 
   // 4 · two values only, read off the darkened grey
-  out.appendChild(arrow('threshold'));
-  out.appendChild(card(
+  add(arrow('threshold'));
+  add(card(
     'binary',
     () => cropCanvas(b, k, 'binary'),
     [['tone', 'binary'],
      ['cut', `darkened grey < ${$('cut').value}`],
      ['values', '0 or 255, nothing between']],
     'binary'
-  ));
+  ),
+    'binary');
 
   // The four tone cards are cheap and already on screen. `analyse` is the
   // expensive part — run-lengths over every pixel, merging, then the O(n^2)
@@ -516,8 +550,8 @@ async function buildCards(out, note, stale) {
   if (stale()) return;
 
   // 5 · repair the scan: bridge toner voids that split one rule into pieces
-  out.appendChild(arrow('mend breaks'));
-  out.appendChild(card(
+  add(arrow('mend breaks'));
+  add(card(
     'mended',
     () => mendCanvas(a),
     a.mendSpan > 1
@@ -527,14 +561,15 @@ async function buildCards(out, note, stale) {
          ['amber', 'the pixels filled in']]
       : [['mend', 'off'], ['note', 'raise the slider to bridge breaks']],
     'mended, added pixels in amber'
-  ));
+  ),
+    'mended');
 
-  out.appendChild(fork('every run of ink, read both ways'));
+  add(fork('every run of ink, read both ways'));
   // Each direction gets the full set of cleaning variants, applied to ITS OWN
   // axis: the horizontal mask judged on x-continuity, the vertical on y. The
   // counts under each row are recomputed from that mask, so they are what the
   // pipeline would really see, not an estimate.
-  out.appendChild(listCard(
+  add(listCard(
     'horizontal lines',
     sel => dirCanvas(a, sel ? sel.key : 'none', true),
     [['runs', `${a.hRuns.toLocaleString()} — every one`],
@@ -546,9 +581,10 @@ async function buildCards(out, note, stale) {
      ['try', 'pick a cleaning rule below — each is tested along x']],
     'horizontal lines',
     dirRows(a, true)
-  ));
-  out.appendChild(arrow('rotate the test'));
-  out.appendChild(listCard(
+  ),
+    'horizontal lines');
+  add(arrow('rotate the test'));
+  add(listCard(
     'vertical lines',
     sel => dirCanvas(a, sel ? sel.key : 'none', false),
     [['runs', `${a.vRuns.toLocaleString()} — every one`],
@@ -560,8 +596,9 @@ async function buildCards(out, note, stale) {
      ['try', 'pick a cleaning rule below — each is tested along y']],
     'vertical lines',
     dirRows(a, false)
-  ));
-  out.appendChild(arrow('overlay'));
+  ),
+    'vertical lines');
+  add(arrow('overlay'));
   // The morphology comparison. Each row recomputes the mask, the run lengths
   // and the merge from scratch, so the counts underneath are what the pipeline
   // would really see if that variant were switched on — not an estimate.
@@ -605,7 +642,7 @@ async function buildCards(out, note, stale) {
       ];
     },
   }));
-  out.appendChild(listCard(
+  add(listCard(
     'lines combined',
     sel => variantCanvas(a, sel ? sel.key : 'none'),
     [['crop', `${a.w} × ${a.h} px = ${(a.area / 1e6).toFixed(2)} Mpx`],
@@ -616,7 +653,8 @@ async function buildCards(out, note, stale) {
      ['try', 'pick a morphology below to see it on this page']],
     'lines combined',
     variantRows
-  ));
+  ),
+    'lines combined');
 
   // ---- junctions, straight off the pixels ----
   // Before any line is built: where is a pixel part of a long horizontal run
@@ -652,8 +690,8 @@ async function buildCards(out, note, stale) {
       ['drawn', 'the qualifying arms are drawn through the selected point'],
     ],
   }));
-  out.appendChild(arrow('where the runs cross'));
-  out.appendChild(listCard(
+  add(arrow('where the runs cross'));
+  add(listCard(
     'junctions',
     sel => junctionCanvas(a, JREACH, sel),
     [['found', `${jn.list.length} junctions from ${jn.px.toLocaleString()} junction pixels`],
@@ -666,7 +704,8 @@ async function buildCards(out, note, stale) {
      ['note', 'read straight off the pixels: no lines, no merging, no filtering']],
     `junctions: runs long in both axes, reach ≥ ${JREACH} px`,
     jRows
-  ));
+  ),
+    'junctions');
 
   // ---- the junction graph ----
   // Join each junction to its nearest neighbour along each axis, but only where
@@ -691,8 +730,8 @@ async function buildCards(out, note, stale) {
         : 'no ink path to the frame — a stamp, a heading box, or text'],
     ],
   }));
-  out.appendChild(arrow('join adjacent junctions'));
-  out.appendChild(listCard(
+  add(arrow('join adjacent junctions'));
+  add(listCard(
     'junction graph',
     sel => graphCanvas(a, JREACH, sel),
     [['junctions', `${G.pts.length}`],
@@ -728,7 +767,8 @@ async function buildCards(out, note, stale) {
        'between two real crossings.']],
     'junction graph: adjacent junctions joined where ink runs between them',
     gRows
-  ));
+  ),
+    'junction graph');
 
   // ---- the table, built from the graph ----
   // Lattice from the junction coordinates, walls from the graph edges, cells by
@@ -768,8 +808,8 @@ async function buildCards(out, note, stale) {
         'the right; blue dots are the junctions that close it'],
     ],
   })) : [];
-  out.appendChild(arrow('close the loops'));
-  out.appendChild(listCard(
+  add(arrow('close the loops'));
+  add(listCard(
     'table from junctions',
     sel => graphTableCanvas(a, JREACH, sel),
     gt
@@ -829,7 +869,8 @@ async function buildCards(out, note, stale) {
          ['try', 'a smaller reach, or check the junction graph card above']],
     'table from junctions: crop, the graph, and the cells read off it',
     gtRows
-  ));
+  ),
+    'table from junctions');
 
   // Each stage reported as "in -> out", and the length histogram spelled out,
   // because the totals alone hide the shape. The peak list is the useful view:
@@ -840,8 +881,8 @@ async function buildCards(out, note, stale) {
     ? ps.slice(0, 8).map(p =>
         `${axis}=${p.at} ${Math.round(p.cover * 100)}%/${p.pieces}p`).join('  ')
     : 'none above the threshold';
-  out.appendChild(arrow('merge runs into lines, then straighten broken rules'));
-  out.appendChild(card(
+  add(arrow('merge runs into lines, then straighten broken rules'));
+  add(card(
     'merged lines',
     () => lineCanvas(a, 'both', false),
     [['raw runs', `${a.hRuns.toLocaleString()} h + ${a.vRuns.toLocaleString()} v = ${(a.hRuns + a.vRuns).toLocaleString()}`],
@@ -855,7 +896,8 @@ async function buildCards(out, note, stale) {
      ['reading', '“y=247 98%/1p” = that row is 98% covered, by 1 fragment'],
      ['note', 'still unfiltered — glyph strokes included']],
     'merged lines'
-  ));
+  ),
+    'merged lines');
 
   // What the merge actually did, run by run. Two views: the before/after pair
   // with every absorption drawn, and the same page tinted by how many runs each
@@ -957,8 +999,8 @@ async function buildCards(out, note, stale) {
     };
   });
 
-  out.appendChild(arrow('runs → groups'));
-  out.appendChild(listCard(
+  add(arrow('runs → groups'));
+  add(listCard(
     'merge: before and after',
     sel => mergeCompareCanvas(a, sel && sel.line),
     [['left', `the ${(a.hRuns + a.vRuns).toLocaleString()} raw runs that went in`],
@@ -968,10 +1010,11 @@ async function buildCards(out, note, stale) {
      ['list below', 'the 40 biggest merges — click one to isolate it']],
     'merge: raw runs on the left, groups on the right',
     rows
-  ));
+  ),
+    'merge: before and after');
 
-  out.appendChild(arrow('tint by runs swallowed'));
-  out.appendChild(listCard(
+  add(arrow('tint by runs swallowed'));
+  add(listCard(
     'merge heat',
     sel => mergeHeatCanvas(a, sel && sel.line),
     [...MERGE_HEAT.map(([lo, hi, col, label]) => [
@@ -980,7 +1023,8 @@ async function buildCards(out, note, stale) {
      ['read it', 'green is a rule; red is text fused into a bar']],
     'merge heat: every line tinted by how many raw runs it absorbed',
     rows
-  ));
+  ),
+    'merge heat');
 
   // ---- joinCollinear, its own card ----
   // The second half of "merged lines", which until now was only a number. It
@@ -1045,8 +1089,8 @@ async function buildCards(out, note, stale) {
     };
   });
 
-  out.appendChild(arrow('join pieces end to end'));
-  out.appendChild(listCard(
+  add(arrow('join pieces end to end'));
+  add(listCard(
     'collinear joins',
     sel => joinCompareCanvas(a, sel),
     [['left', `${(a.hMerged.length + a.vMerged.length).toLocaleString()} lines out of the merge`],
@@ -1059,10 +1103,11 @@ async function buildCards(out, note, stale) {
      ['vs mergeLines', 'that stacks pieces ACROSS a rule; this joins them ALONG it']],
     'collinear joins: pieces of one rule stitched end to end',
     joinRows
-  ));
+  ),
+    'collinear joins');
 
-  out.appendChild(arrow('keep the ones that touch a perpendicular'));
-  out.appendChild(card(
+  add(arrow('keep the ones that touch a perpendicular'));
+  add(card(
     'crossing lines',
     () => lineCanvas(a, 'both', true),
     [['horizontal', `${a.hKept.length} kept of ${a.hLines.length.toLocaleString()}`],
@@ -1070,10 +1115,11 @@ async function buildCards(out, note, stale) {
      ['rule', `≥ ${a.minCross} crossings, any partner — no length test`],
      ['amber', 'the 90° crossings themselves']],
     'crossing lines: borders and dividers'
-  ));
+  ),
+    'crossing lines');
 
-  out.appendChild(arrow('drop lines that never reach a second perpendicular'));
-  out.appendChild(card(
+  add(arrow('drop lines that never reach a second perpendicular'));
+  add(card(
     'spanning lines',
     () => lineCanvas(a, 'both', 'span'),
     [['horizontal', `${a.hSpan.length} kept of ${a.hKept.length}`],
@@ -1081,10 +1127,11 @@ async function buildCards(out, note, stale) {
      ['rule', 'both ends land inside a different perpendicular'],
      ['edge', 'the crop border counts as an anchor']],
     'spanning lines: each end on a different perpendicular'
-  ));
+  ),
+    'spanning lines');
 
-  out.appendChild(arrow('keep the connected frame'));
-  out.appendChild(card(
+  add(arrow('keep the connected frame'));
+  add(card(
     'connected only',
     () => lineCanvas(a, 'both', 'conn'),
     [['horizontal', `${a.hConn.length}`],
@@ -1093,10 +1140,11 @@ async function buildCards(out, note, stale) {
      ['dropped', `${a.dropped} with no path to the frame`],
      ['green', 'the frame it spans']],
     'connected to the outer frame'
-  ));
+  ),
+    'connected only');
 
-  out.appendChild(arrow('flood the closed regions'));
-  out.appendChild(card(
+  add(arrow('flood the closed regions'));
+  add(card(
     'cells',
     () => cellCanvas(a),
     [['cells', `${a.table ? a.table.cells.length : 0}`],
@@ -1105,10 +1153,11 @@ async function buildCards(out, note, stale) {
      ['content', a.table ? `${a.table.filled} filled, ${a.table.empty} empty` : '—'],
      ['green', 'holds content; red is empty; amber outline merged']],
     'cells, green holds content'
-  ));
+  ),
+    'cells');
 
-  out.appendChild(arrow('lay them out as a table'));
-  out.appendChild(card(
+  add(arrow('lay them out as a table'));
+  add(card(
     'reconstructed',
     () => tableCanvas(a),
     [['rows', a.table ? `${a.table.rows}` : '—'],
@@ -1117,7 +1166,8 @@ async function buildCards(out, note, stale) {
      ['filled', a.table ? `${a.table.filled} of ${a.table.cells.length}` : '—'],
      ['ragged', a.table ? `${a.table.ragged} not rectangular` : '—']],
     'reconstructed structure'
-  ));
+  ),
+    'reconstructed');
 
   // How long the analysis took, so a slow crop reads as a big crop rather than
   // as the app having stalled.
@@ -4135,6 +4185,10 @@ $('docSel').addEventListener('change', e => openDoc(e.target.value));
 $('pageSel').addEventListener('change', e => showPage(+e.target.value));
 $('unit').addEventListener('change', () => { if (BOX) runBox(); else hint(); });
 $('upscale').addEventListener('change', () => { if (BOX) runBox(); });
+$('allStages').addEventListener('change', e => {
+  SHORT_VIEW = !e.target.checked;
+  if (BOX) runBox();
+});
 
 for (const id of ['dark', 'cut', 'mend', 'crossN', 'ground']) {
   $(id).addEventListener('input', () => {
