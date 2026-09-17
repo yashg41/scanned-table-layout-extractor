@@ -489,20 +489,24 @@ async function buildCards(out, note, stale) {
   ),
     'as extracted');
 
-  // 2 · enlarged if it is small enough to need it, otherwise say so
+  // 2 · enlarged if the box is ticked, otherwise shown at natural size
   add(arrow(k > 1 ? 'enlarge' : 'size check'));
   add(card(
-    k > 1 ? `enlarged ×${k.toFixed(1)}` : 'not enlarged',
+    k > 1 ? `enlarged ×${k.toFixed(2)}` : 'not enlarged',
     () => cropCanvas(b, k, 'off'),
     k > 1
-      ? [['enlarged', `×${k.toFixed(2)}`],
+      ? [['area', `×${ENLARGE_AREA} — twice the pixel count`],
+         ['each side', `×${k.toFixed(3)}  (√${ENLARGE_AREA})`],
          ['now', `${Math.round(bw * k)} × ${Math.round(bh * k)} px`],
-         ['why', `${areaPct.toFixed(1)}% < ${ENLARGE_BELOW}% of page`]]
-      : [['not enlarged', `${areaPct.toFixed(1)}% ≥ ${ENLARGE_BELOW}% of page`],
-         ['shown at', `${bw} × ${bh} px`]],
+         ['from', `${bw} × ${bh} px`],
+         ['note', 'upscaling interpolates: a rule that wanders 2px on the paper ' +
+           'wanders more once enlarged, and the junction pairing absorbs that']]
+      : [['shown at', `${bw} × ${bh} px`],
+         ['of page', `${areaPct.toFixed(1)}% area`],
+         ['enlarge', 'off — tick “enlarge” in the toolbar for twice the area']],
     k > 1 ? `enlarged ×${k.toFixed(2)}` : 'natural size'
   ),
-    k > 1 ? `enlarged ×${k.toFixed(1)}` : 'not enlarged');
+    k > 1 ? `enlarged ×${k.toFixed(2)}` : 'not enlarged');
 
   // 3 · every pixel toward black, none toward white
   const g = darkenGamma();
@@ -1532,9 +1536,9 @@ function analyse(b, k) {
   for (let i = 0, j = 0; i < w * h; i++, j += 4) scanned[i] = darkenValue(d[j], g) < cut ? 1 : 0;
   // repair the scan first: every stage below reads `ink`, so a rule broken by a
   // toner void must be whole before the first run is counted
-  // A toner void is physical, but the raster is not: enlargeFactor() magnifies a
-  // small crop up to 4x, so a fixed px gap is four different sizes depending on
-  // which table it lands on. Measure the bridge against the crop's own area —
+  // A toner void is physical, but the raster is not: enlargeFactor() can double
+  // the crop's area, so a fixed px gap means different things depending on
+  // whether it ran. Measure the bridge against the crop's own area —
   // sqrt(w*h) is the side of the equal-area square, which holds up on a wide thin
   // strip where min(w,h) collapses. w and h are already post-enlargement, so this
   // is the same physical gap whatever the magnification.
@@ -3414,15 +3418,18 @@ function pageCanvas(box) {
 // natural size. The trigger is AREA, not width: a wide thin strip and a small
 // square can share a width while occupying very different amounts of the page.
 // Measured here, 33 of 47 tables fall under the threshold.
-const ENLARGE_BELOW = 40;   // % of page area
-const CROP_TARGET = 1000;   // px wide to aim for
-const CROP_MAX_UP = 4;      // never magnify beyond this
 
+// Ticked means twice the AREA — whatever the crop. Twice the area is √2 per
+// side, not 2, so the pixel count doubles rather than quadrupling.
+//
+// This used to aim at a 1000px target and only for crops under 40% of the page,
+// which meant a 1050px crop reported "not enlarged" despite being well under
+// that 40%: the area test decided whether it was eligible and the width test
+// decided by how much, and at 1050px there was nothing to add. Two rules
+// disagreeing is worse than one you can predict.
+const ENLARGE_AREA = 2;                       // times the pixel count
 function enlargeFactor(bw, bh) {
-  if (!$('upscale').checked) return 1;
-  const areaPct = 100 * (bw * bh) / (W * H);
-  if (areaPct >= ENLARGE_BELOW) return 1;
-  return Math.max(1, Math.min(CROP_MAX_UP, CROP_TARGET / bw));
+  return $('upscale').checked ? Math.sqrt(ENLARGE_AREA) : 1;
 }
 
 function cropCanvas(b, k, mode) {
