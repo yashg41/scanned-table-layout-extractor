@@ -123,6 +123,20 @@ def index() -> FileResponse:
     )
 
 
+@app.get("/experiment")
+def experiment() -> FileResponse:
+    """The experiment lane: a full copy of the page, free to diverge.
+
+    `experiment.html` / `experiment.js` began as a byte-for-byte copy of
+    `index.html` / `app.js`. Logic changes are tried there; `/` keeps the
+    pipeline that works today. The two share only this server and the document
+    library, so a change to one cannot affect the other.
+    """
+    return FileResponse(
+        STATIC / "experiment.html", headers={"Cache-Control": "no-cache"}
+    )
+
+
 class NoCacheStatic(StaticFiles):
     """Serve app.js/index.html with `no-cache`.
 

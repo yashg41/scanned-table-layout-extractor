@@ -1,6 +1,6 @@
 <!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Scanned table layout extractor</title>
+<title>Table layout extractor — experiment</title>
 <style>
   * { box-sizing:border-box; }
   body { margin:0; background:#2b2d33; color:#e6e6e6;
@@ -15,12 +15,15 @@
   .ck input[type=number] { width:4.5rem; background:#3a3d44; color:#eee;
          border:1px solid #555; border-radius:3px; padding:2px 4px; font:11px monospace; }
   .sep { width:1px; align-self:stretch; background:#3a3d44; }
-  /* Link to the experiment lane at /experiment, which is a full copy of this
-     page free to diverge. This page stays as it is. */
-  .lane { margin-left:auto; color:#8a8f99; text-decoration:none;
-          font:11px monospace; border:1px solid #4a4d55; border-radius:4px;
+
+  /* This page is the experiment lane. The amber edge and the link are the only
+     way to tell it from the stable page at a glance, since the two are
+     otherwise identical — and mistaking one for the other wastes a session. */
+  .bar { border-bottom-color:#b8860b; }
+  .lane { margin-left:auto; color:#e0a92a; text-decoration:none;
+          font:11px monospace; border:1px solid #6b5212; border-radius:4px;
           padding:3px 8px; white-space:nowrap; }
-  .lane:hover { background:#3a3d44; color:#e0a92a; }
+  .lane:hover { background:#3a3320; }
 
   /* ---- first run ---- */
   #empty { padding:clamp(1.5rem, 6vh, 4rem); }
@@ -295,7 +298,7 @@
       <span id="busy" hidden><span class="spin"></span><span id="busyMsg">working…</span></span>
       <span id="status"></span>
       <span class="sep"></span>
-      <a class="lane" href="/experiment" title="the experiment lane, where logic changes are tried">stable · to experiment →</a>
+      <a class="lane" href="/" title="the stable pipeline, unchanged">experiment · to stable →</a>
     </div>
 
     <div id="picker">
@@ -336,5 +339,5 @@
       <dl id="zstats"></dl>
     </div>
   </div>
-<script src="/static/app.js"></script>
+<script src="/static/experiment.js"></script>
 </body></html>
