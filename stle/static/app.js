@@ -2355,34 +2355,20 @@ function junctionGraph(a, reach, opts) {
     const horiz = y0 === y1 || Math.abs(x1 - x0) > Math.abs(y1 - y0);
     const n = horiz ? Math.abs(x1 - x0) : Math.abs(y1 - y0);
     if (n < 2) return { frac: 1, gap: 0, len: n };
-    // How far either side of the straight line to look for the rule.
-    //
-    // A rule that is straight on paper wanders in the raster, and the probe
-    // walks a straight line between two junctions — so on a long span it steps
-    // off the ink and reads the paper beside it. Measured on one title block: a
-    // 23px span came back 62.5% covered with a "gap" of 9 at +-1px and 100% at
-    // +-3px. The rule was continuous throughout; the probe was looking 3px to
-    // the side of it.
-    //
-    // So the slack grows with the span, like pairTol, because drift accumulates
-    // with distance. Checked across three pages: on the two without skew this
-    // changes almost nothing (5,466 candidate pairs pass either way), and on
-    // the skewed one it recovers 105 -> 126. It rescues drifting rules without
-    // opening the gate where nothing is drifting.
-    const lat = 1 + Math.round(0.02 * n);
     let on = 0, worst = 0, run = 0;
     for (let k = 0; k <= n; k++) {
       const t = k / n;
       const x = Math.round(x0 + (x1 - x0) * t), y = Math.round(y0 + (y1 - y0) * t);
+      // allow the rule to wander by a pixel or two across its own width
       let hit = 0;
-      for (let d = -lat; d <= lat && !hit; d++) {
+      for (let d = -1; d <= 1 && !hit; d++) {
         const xx = horiz ? x : x + d, yy = horiz ? y + d : y;
         if (xx >= 0 && xx < w && yy >= 0 && yy < h && ink[yy * w + xx]) hit = 1;
       }
       if (hit) { on++; run = 0; }
       else { run++; if (run > worst) worst = run; }
     }
-    return { frac: on / (n + 1), gap: worst, len: n, lat };
+    return { frac: on / (n + 1), gap: worst, len: n };
   };
 
   // Candidate edges.
