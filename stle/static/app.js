@@ -555,16 +555,32 @@ async function buildCards(out, note, stale) {
 
   // 5 · repair the scan: bridge toner voids that split one rule into pieces
   add(arrow('mend breaks'));
-  add(card(
+  const mendDims = a.mendSpan > 1
+    ? [['bridges', `gaps under ${Math.round(a.mendSpan)} px (${a.mendPct}% of the crop)`],
+       ['added', `${a.mended.toLocaleString()} px (${(100 * a.mended / Math.max(1, count(a.scanned))).toFixed(1)}%)`],
+       ['axes', 'closed separately, then unioned'],
+       ['amber', 'the pixels filled in'],
+       ['compare', 'pick before / after / both below to see what changed']]
+    : [['mend', 'off'], ['note', 'raise the slider to bridge breaks']];
+  add(listCard(
     'mended',
-    () => mendCanvas(a),
-    a.mendSpan > 1
-      ? [['bridges', `gaps under ${Math.round(a.mendSpan)} px (${a.mendPct}% of the crop)`],
-         ['added', `${a.mended.toLocaleString()} px (${(100 * a.mended / Math.max(1, count(a.scanned))).toFixed(1)}%)`],
-         ['axes', 'closed separately, then unioned'],
-         ['amber', 'the pixels filled in']]
-      : [['mend', 'off'], ['note', 'raise the slider to bridge breaks']],
-    'mended, added pixels in amber'
+    sel => mendCanvas(a, sel ? sel.mode : 'after'),
+    mendDims,
+    'mended, added pixels in amber',
+    [
+      { mode: 'after', colour: '#f08c00', label: 'after', note: 'amber = added',
+        dims: [...mendDims,
+          ['showing', 'the mask the pipeline uses, with the mended pixels in amber']] },
+      { mode: 'before', colour: '#8a8f99', label: 'before', note: 'raw threshold',
+        dims: [...mendDims,
+          ['showing', 'the threshold as it came out, before any gap was bridged']] },
+      { mode: 'both', colour: '#2e7d32', label: 'both', note: 'side by side',
+        dims: [...mendDims,
+          ['left', 'before — the raw threshold'],
+          ['right', 'after — with the added pixels in amber'],
+          ['showing', 'the same crop twice at one scale, so the change is visible ' +
+            'rather than inferred from a count']] },
+    ]
   ),
     'mended');
 
@@ -3688,20 +3704,44 @@ function fillCells(table, ink, w, h) {
 
 // The scan in black with the repaired pixels in amber, so what the mend invented
 // is always visible rather than silently folded into the ink.
-function mendCanvas(a) {
+// `mode`: 'after' the mend with the added pixels in amber (the default),
+// 'before' the untouched threshold, or 'both' side by side so the change can be
+// read rather than inferred from a count.
+function mendCanvas(a, mode) {
   const { w, h } = a;
-  const c = document.createElement('canvas');
-  c.width = w; c.height = h;
-  const ctx = c.getContext('2d');
-  const im = ctx.createImageData(w, h), d = im.data;
-  for (let i = 0, j = 0; i < w * h; i++, j += 4) {
-    const added = a.ink[i] && !a.scanned[i];
-    d[j]     = added ? 240 : (a.ink[i] ? 20 : 255);
-    d[j + 1] = added ? 140 : (a.ink[i] ? 20 : 255);
-    d[j + 2] = added ? 0   : (a.ink[i] ? 20 : 255);
-    d[j + 3] = 255;
+  const paint = (data, off, which) => {
+    for (let i = 0, j = off; i < w * h; i++, j += 4) {
+      const added = a.ink[i] && !a.scanned[i];
+      const on = which === 'before' ? a.scanned[i] : a.ink[i];
+      const amber = which !== 'before' && added;
+      data[j]     = amber ? 240 : (on ? 20 : 255);
+      data[j + 1] = amber ? 140 : (on ? 20 : 255);
+      data[j + 2] = amber ? 0   : (on ? 20 : 255);
+      data[j + 3] = 255;
+    }
+  };
+  if (mode !== 'both') {
+    const c = document.createElement('canvas');
+    c.width = w; c.height = h;
+    const ctx = c.getContext('2d');
+    const im = ctx.createImageData(w, h);
+    paint(im.data, 0, mode || 'after');
+    ctx.putImageData(im, 0, 0);
+    return c;
   }
-  ctx.putImageData(im, 0, 0);
+  // side by side, at the same scale, so the two can be compared directly
+  const gap = Math.max(12, Math.round(Math.min(w, h) * 0.04));
+  const c = document.createElement('canvas');
+  c.width = w * 2 + gap; c.height = h;
+  c.panelW = w; c.panelH = h; c.panelGap = gap;
+  c.panelPlaces = [{ panel: 0, cx: 0, cy: 0 }, { panel: 1, cx: 1, cy: 0 }];
+  const ctx = c.getContext('2d');
+  ctx.fillStyle = '#e9ebef'; ctx.fillRect(0, 0, c.width, h);
+  for (const [dx, which] of [[0, 'before'], [w + gap, 'after']]) {
+    const im = ctx.createImageData(w, h);
+    paint(im.data, 0, which);
+    ctx.putImageData(im, dx, 0);
+  }
   return c;
 }
 
