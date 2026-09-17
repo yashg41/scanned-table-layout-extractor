@@ -808,8 +808,15 @@ async function buildCards(out, note, stale) {
       ['cell', `row ${cell.row}, col ${cell.col}`],
       ['span', `${cell.rowspan} row${cell.rowspan > 1 ? 's' : ''} × ${cell.colspan} col${cell.colspan > 1 ? 's' : ''}`],
       ['box', `${cell.x0},${cell.y0} → ${cell.x1},${cell.y1}`],
-      ['corners', `${cell.corners} turns, from ${cell.nodes} junctions on the ` +
-        'boundary — a junction the side passes through is not a corner'],
+      ...(cell.found === 'region' ? [
+        ['found by', 'flooding the enclosed regions — no loop of edges closed ' +
+          'around this space, but the walls enclose it on every side'],
+        ['shape', cell.rect ? 'fills its box' :
+          `fills ${Math.round(cell.solidity * 100)}% of its box — not a rectangle`],
+      ] : [
+        ['corners', `${cell.corners} turns, from ${cell.nodes} junctions on the ` +
+          'boundary — a junction the side passes through is not a corner'],
+      ]),
       ...(cell.holes && cell.holes.length ? [
         ['contains', `${cell.holes.length} cell${cell.holes.length > 1 ? 's' : ''} — ` +
           cell.holes.map(o => `${o.rowspan}×${o.colspan} at ${o.x0},${o.y0}`).join('; ')],
@@ -833,10 +840,20 @@ async function buildCards(out, note, stale) {
     'table from junctions',
     sel => graphTableCanvas(a, JREACH, sel),
     gt
-      ? [['cells', `${gt.cells.length} — each the smallest loop through an edge`],
+      ? [['cells', `${gt.cells.length}` +
+           (gt.recovered ? ` — ${gt.cells.length - gt.recovered} from loops of ` +
+             `edges, ${gt.recovered} from enclosed regions`
+            : ' — each the smallest loop through an edge')],
+         // Euler counts the faces a loop search should find, so it is checked
+         // against the loop cells alone; a recovered cell is by definition one
+         // the loop search did not produce.
          ['euler check', `${gt.euler} expected from E − V + C` +
-           (gt.euler === gt.cells.length ? '  ✓ matches'
-             : `  ⚠ found ${gt.cells.length}`)],
+           (gt.euler === gt.cells.length - gt.recovered ? '  ✓ matches loops'
+             : `  ⚠ ${gt.cells.length - gt.recovered} loop cells`)],
+         ...(gt.recovered ? [['recovered',
+           `${gt.recovered} enclosed space${gt.recovered > 1 ? 's' : ''} no loop ` +
+           'closed around — walled on every side, so counted as cells. Drawn ' +
+           'dashed in blue.']] : []),
          ['merged', `${gt.spans} span more than one row or column`],
          ['content', `${gt.cells.filter(c => c.filled).length} filled, ${gt.cells.filter(c => !c.filled).length} empty`],
          ['ragged', `${gt.ragged} with more than four extreme corners`],
@@ -2739,6 +2756,117 @@ function loopsFromGraph(G) {
 }
 
 // ---------------------------------------------------------------------------
+// Enclosed regions the loop search missed.
+//
+// A shortest-cycle search asks "what is the smallest ring through this edge",
+// which is not the same question as "what regions does this drawing divide the
+// plane into". Where a rule carries extra nodes along its length, the cycle
+// through a neighbour's edge can come back with a different node set than the
+// real boundary, and a region enclosed on all four sides is then never emitted.
+// Seen on a title block: two fully walled boxes, ink and edges both present,
+// absent from the cell list.
+//
+// So the regions are found the other way round, geometrically: draw the live
+// edges onto a raster, flood the background in from outside, and whatever the
+// flood cannot reach is enclosed. Every connected component of unreached pixels
+// is a region, whatever its shape — an L or a T is one component, which a
+// rowspan/colspan loop cannot express at all.
+//
+// This runs AFTER the loop search and does not replace it. A region whose box
+// matches a loop cell within `tol` is that cell found a second time and is
+// dropped; what survives is what the loops missed. If nothing survives the
+// table is exactly what it was.
+// ---------------------------------------------------------------------------
+function regionsFromGraph(G, w, h) {
+  const { pts, edges, inMain } = G;
+  const live = edges.filter(e => inMain.has(e.a) && inMain.has(e.b));
+  if (!live.length) return [];
+
+  // Work at reduced resolution: a cell is hundreds of px across, so quarter
+  // scale keeps every real region separable while making the flood cheap. The
+  // wall is drawn thick enough that a one-pixel graze cannot leak between two
+  // regions and merge them.
+  const SCALE = 4;
+  const rw = Math.max(1, Math.ceil(w / SCALE)) + 2;   // +2: a one-cell margin all
+  const rh = Math.max(1, Math.ceil(h / SCALE)) + 2;   // round, so the flood starts
+  const wall = new Uint8Array(rw * rh);               // strictly outside the page
+  const at = (x, y) => Math.min(rw - 1, Math.max(0, Math.round(x / SCALE) + 1))
+                     + Math.min(rh - 1, Math.max(0, Math.round(y / SCALE) + 1)) * rw;
+
+  // Bresenham, so an edge with a few px of drift still walls continuously.
+  for (const e of live) {
+    const p = pts[e.a], q = pts[e.b];
+    const steps = Math.max(1, Math.round(Math.max(Math.abs(q.x - p.x), Math.abs(q.y - p.y)) / SCALE));
+    for (let s = 0; s <= steps; s++) {
+      const t = s / steps;
+      const cx = Math.round((p.x + (q.x - p.x) * t) / SCALE) + 1;
+      const cy = Math.round((p.y + (q.y - p.y) * t) / SCALE) + 1;
+      // 3x3 brush: a diagonal run of single pixels leaves corner-to-corner gaps
+      // that a 4-connected flood squeezes through
+      for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+        const x = cx + dx, y = cy + dy;
+        if (x >= 0 && x < rw && y >= 0 && y < rh) wall[x + y * rw] = 1;
+      }
+    }
+  }
+
+  // flood the outside, 4-connected, from the margin
+  const outside = new Uint8Array(rw * rh);
+  const stack = [0];
+  outside[0] = 1;
+  while (stack.length) {
+    const i = stack.pop();
+    const x = i % rw, y = (i / rw) | 0;
+    const push = (nx, ny) => {
+      if (nx < 0 || nx >= rw || ny < 0 || ny >= rh) return;
+      const j = nx + ny * rw;
+      if (outside[j] || wall[j]) return;
+      outside[j] = 1; stack.push(j);
+    };
+    push(x - 1, y); push(x + 1, y); push(x, y - 1); push(x, y + 1);
+  }
+
+  // components of what the flood could not reach — each is one enclosed region
+  const comp = new Int32Array(rw * rh).fill(-1);
+  const regions = [];
+  for (let seed = 0; seed < rw * rh; seed++) {
+    if (outside[seed] || wall[seed] || comp[seed] >= 0) continue;
+    const id = regions.length;
+    let x0 = rw, x1 = -1, y0 = rh, y1 = -1, area = 0;
+    comp[seed] = id;
+    const st = [seed];
+    while (st.length) {
+      const i = st.pop();
+      const x = i % rw, y = (i / rw) | 0;
+      area++;
+      if (x < x0) x0 = x; if (x > x1) x1 = x;
+      if (y < y0) y0 = y; if (y > y1) y1 = y;
+      const push = (nx, ny) => {
+        if (nx < 0 || nx >= rw || ny < 0 || ny >= rh) return;
+        const j = nx + ny * rw;
+        if (outside[j] || wall[j] || comp[j] >= 0) return;
+        comp[j] = id; st.push(j);
+      };
+      push(x - 1, y); push(x + 1, y); push(x, y - 1); push(x, y + 1);
+    }
+    // Back to page coordinates. The region is the space BETWEEN the walls, so
+    // its raster box sits a brush-width inside the rules on every side; growing
+    // by that much puts the edges back on the rules themselves. Exactly where
+    // is then decided by snapping to real junctions, which is what the caller
+    // does — this only has to land within `tol` of them.
+    const grow = SCALE * 2;
+    regions.push({
+      x0: Math.max(0, (x0 - 1) * SCALE - grow), x1: Math.min(w, (x1 - 1) * SCALE + SCALE + grow),
+      y0: Math.max(0, (y0 - 1) * SCALE - grow), y1: Math.min(h, (y1 - 1) * SCALE + SCALE + grow),
+      // filled fraction of the bounding box: 1 for a rectangle, less for an L
+      solidity: area / Math.max(1, (x1 - x0 + 1) * (y1 - y0 + 1)),
+      px: area * SCALE * SCALE,
+    });
+  }
+  return regions;
+}
+
+// ---------------------------------------------------------------------------
 // Junction graph -> table.
 //
 // Cells come from the graph's faces. Rows and columns are assigned afterwards,
@@ -2793,6 +2921,49 @@ function tableFromGraph(a, reach) {
       rect: ps.filter(p => (p.x === x0 || p.x === x1) && (p.y === y0 || p.y === y1)).length === 4,
     };
   });
+  // Enclosed regions the loops missed, added to the cells they already found.
+  // A region matching an existing cell's box within `tol` is that same cell
+  // arrived at a second way; only what is left over is new. Marked `found:
+  // 'region'` so the picture can show which cells came from here.
+  // Snap a region edge onto a real junction coordinate. A recovered cell is
+  // then described by original points, and — because the loop cells are built
+  // from those same junctions — both sides of the duplicate test end up on the
+  // same values, which raster rounding alone does not guarantee. Snapping is
+  // generous (2*tol) since the raster box lands a brush-width off; a side with
+  // no junction near it keeps its measured edge rather than inventing one.
+  const snapTol = tol * 2;
+  const snap = (v, axis) => {
+    let best = v, d = snapTol + 1;
+    for (const p of G.pts) {
+      const c = axis === 'x' ? p.x : p.y;
+      if (Math.abs(c - v) < d) { d = Math.abs(c - v); best = c; }
+    }
+    return best;
+  };
+  const recovered = [];
+  for (const rg of regionsFromGraph(G, a.w, a.h)) {
+    const x0 = snap(rg.x0, 'x'), x1 = snap(rg.x1, 'x');
+    const y0 = snap(rg.y0, 'y'), y1 = snap(rg.y1, 'y');
+    if (x1 - x0 < tol || y1 - y0 < tol) continue;   // collapsed to nothing
+    const dup = cells.some(c =>
+      Math.abs(c.x0 - x0) <= tol && Math.abs(c.x1 - x1) <= tol &&
+      Math.abs(c.y0 - y0) <= tol && Math.abs(c.y1 - y1) <= tol);
+    if (dup) continue;
+    const r0 = near(ys, y0), r1 = near(ys, y1);
+    const c0 = near(xs, x0), c1 = near(xs, x1);
+    recovered.push({
+      row: r0, col: c0,
+      rowspan: Math.max(1, r1 - r0), colspan: Math.max(1, c1 - c0),
+      x0, x1, y0, y1,
+      nodes: 0, pts: [],
+      // an L or a T does not fill its bounding box, and rowspan/colspan cannot
+      // describe it — same meaning `rect` carries for a loop cell
+      corners: 4, rect: rg.solidity > 0.95,
+      found: 'region', solidity: rg.solidity,
+    });
+  }
+  cells.push(...recovered);
+
   cells.sort((p, q) => p.row - q.row || p.col - q.col);
 
   // A cell contains no other cell.
@@ -2830,6 +3001,8 @@ function tableFromGraph(a, reach) {
     // found them but they bound no cell, which is worth seeing rather than
     // silently dropping
     stubs: F.stubs.length, orphans: F.orphans,
+    // cells no loop found, recovered by flooding the enclosed regions
+    recovered: recovered.length,
     // Euler's formula for a planar graph: bounded faces = E - V + C. A mismatch
     // means loops were missed or double-counted, so it is checked rather than
     // assumed.
@@ -2954,9 +3127,13 @@ function graphTableCanvas(a, reach, sel) {
 
   const lw = Math.max(1.5, Math.round(Math.min(w, h) / 500));
   const r = Math.max(2, Math.round(Math.min(w, h) / 320));
-  const colourOf = cell => !cell.rect ? '#7b1fa2'
+  const colourOf = cell => cell.found === 'region' ? '#0277bd'
+                         : !cell.rect ? '#7b1fa2'
                          : (cell.rowspan > 1 || cell.colspan > 1) ? '#c07000'
                          : cell.filled ? '#2e7d32' : '#b03030';
+  // a cell no loop found, recovered by flooding: dashed, so it reads as the
+  // same cell but visibly from the other pass
+  const dashFor = cell => cell.found === 'region' ? [lw * 4, lw * 3] : [];
 
   // tableFromGraph rebuilds on every render, so a stored cell is never the same
   // OBJECT as the one being drawn — compare by lattice position instead
@@ -2977,7 +3154,9 @@ function graphTableCanvas(a, reach, sel) {
     ctx.fillRect(cell.x0, cell.y0, cell.x1 - cell.x0, cell.y1 - cell.y0);
     ctx.strokeStyle = colourOf(cell);
     ctx.lineWidth = (cell.rowspan > 1 || cell.colspan > 1 || !cell.rect) ? lw * 2 : lw;
+    ctx.setLineDash(dashFor(cell));
     ctx.strokeRect(cell.x0 + .5, cell.y0 + .5, cell.x1 - cell.x0 - 1, cell.y1 - cell.y0 - 1);
+    ctx.setLineDash([]);
     // a cell containing others is hatched over the part that is not its own,
     // so the subtraction is visible rather than only stated in the panel
     for (const o of cell.holes) {
