@@ -797,6 +797,11 @@ async function buildCards(out, note, stale) {
          ['switching', 'the crop / graph / cells buttons in the header show any ' +
            'one, two or all three — one to study, two to compare, three for the ' +
            'overview. The zoom and position are held while you switch.'],
+         ['arrangement', 'follows the crop’s shape: a wide crop stacks, a tall one ' +
+           'goes side by side, and three panels of a squarish crop tile in an L'],
+         ['hovering', 'points at the same spot on every panel at once — crosshairs ' +
+           'plus the cell under the cursor, so the crop, the graph and the cells ' +
+           'can be read against each other'],
          ['—— the graph panel ——', ''],
          ['green line', 'an edge in the kept component — ink runs the whole way'],
          ['red line', 'an edge in some other component, with no path to the frame'],
@@ -1831,7 +1836,8 @@ function mergeCompareCanvas(a, sel) {
   c.width = w * 2 + gap; c.height = h;
   // tell the viewer this canvas is two panels, so the hover readout reports a
   // coordinate within a panel rather than the raw canvas offset
-  c.panelWidth = w; c.panelOffset = w + gap;
+  c.panelW = w; c.panelH = h; c.panelGap = gap;
+  c.panelPlaces = [{ panel: 0, cx: 0, cy: 0 }, { panel: 2, cx: 1, cy: 0 }];
   const ctx = c.getContext('2d');
   ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, c.width, c.height);
   ctx.fillStyle = '#e9ebef'; ctx.fillRect(w, 0, gap, h);
@@ -2773,37 +2779,61 @@ function tableFromGraph(a, reach) {
 function graphTableCanvas(a, reach, sel) {
   const { w, h } = a;
   const R = tableFromGraph(a, reach);
-  const gap = Math.max(12, Math.round(h * 0.04));
-  // Which panels to draw. One to study it closely, two to compare, three for
-  // the overview — at a wide crop three stacked panels each end up small, and
-  // the useful comparison is usually only two of them.
+  const gap = Math.max(12, Math.round(Math.min(w, h) * 0.04));
+  // Which panels to draw, and how to arrange them.
+  //
+  // Stacking three wide crops leaves each a sliver of a tall window, and laying
+  // three tall crops abreast wastes the height. So the arrangement follows the
+  // crop's own shape: a wide crop stacks (its panels are short, so they fit),
+  // a tall one goes side by side. Three panels of a squarish crop go in an
+  // L — two on top, one below — which uses a rectangular window far better
+  // than a 1x3 in either direction.
   const want = PANELS.filter(p => p).length ? PANELS : [true, true, true];
-  const slot = [];               // panel index -> y offset, or -1 if hidden
-  let n = 0;
-  for (let i = 0; i < 3; i++) slot[i] = want[i] ? n++ : -1;
-  const at = i => slot[i] * (h + gap);
-  const c = document.createElement('canvas');
-  c.width = w; c.height = Math.max(1, n * h + Math.max(0, n - 1) * gap);
-  // tell the viewer this canvas is panelled, so the hover readout reports a
-  // coordinate within a panel rather than the raw canvas offset
-  c.panelHeight = h; c.panelStride = h + gap; c.panelSlots = slot;
-  const ctx = c.getContext('2d');
-  ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, w, c.height);
-  ctx.fillStyle = '#e9ebef';
-  for (let k = 1; k < n; k++) ctx.fillRect(0, k * (h + gap) - gap, w, gap);
+  const shown = [];
+  for (let i = 0; i < 3; i++) if (want[i]) shown.push(i);
+  const n = shown.length;
+  const wide = w > h * 1.3;          // much wider than tall
+  const tall = h > w * 1.3;
+  let grid;                          // [col, row] per shown panel, and the span
+  if (n === 1) grid = { cells: [[0, 0]], cols: 1, rows: 1 };
+  else if (n === 2) grid = wide ? { cells: [[0, 0], [0, 1]], cols: 1, rows: 2 }
+                                : { cells: [[0, 0], [1, 0]], cols: 2, rows: 1 };
+  else if (wide) grid = { cells: [[0, 0], [0, 1], [0, 2]], cols: 1, rows: 3 };
+  else if (tall) grid = { cells: [[0, 0], [1, 0], [2, 0]], cols: 3, rows: 1 };
+  else grid = { cells: [[0, 0], [1, 0], [0, 1]], cols: 2, rows: 2 };   // the L
 
-  // TOP: the crop exactly as it is, nothing drawn over it
+  const slot = [-1, -1, -1];         // panel index -> position in `shown`
+  shown.forEach((p, k) => { slot[p] = k; });
+  const cellOf = i => grid.cells[slot[i]];
+  const atX = i => cellOf(i)[0] * (w + gap);
+  const atY = i => cellOf(i)[1] * (h + gap);
+
+  const c = document.createElement('canvas');
+  c.width = grid.cols * w + (grid.cols - 1) * gap;
+  c.height = grid.rows * h + (grid.rows - 1) * gap;
+  // tell the viewer how the canvas is tiled, so the hover readout can report a
+  // coordinate within a panel rather than the raw canvas offset
+  c.panelW = w; c.panelH = h; c.panelGap = gap;
+  c.panelPlaces = shown.map((p, k) => ({ panel: p, cx: grid.cells[k][0], cy: grid.cells[k][1] }));
+  c.panelToggles = true;            // this view offers the crop/graph/cells buttons
+  const ctx = c.getContext('2d');
+  ctx.fillStyle = '#f4f5f7'; ctx.fillRect(0, 0, c.width, c.height);
+  ctx.fillStyle = '#fff';
+  for (const pl of c.panelPlaces)
+    ctx.fillRect(pl.cx * (w + gap), pl.cy * (h + gap), w, h);
+
+  // the crop exactly as it is, nothing drawn over it
   if (pageImg && BOX && slot[0] >= 0) {
     ctx.drawImage(pageImg, BOX.x0, BOX.y0, BOX.x1 - BOX.x0, BOX.y1 - BOX.y0,
-                  0, at(0), w, h);
+                  atX(0), atY(0), w, h);
   }
   if (!R || !R.table) return c;
 
-  // MIDDLE: the junction graph, exactly as its own card draws it
+  // the junction graph, exactly as its own card draws it
   if (slot[1] >= 0) {
     const G = R.G;
     ctx.save();
-    ctx.translate(0, at(1));
+    ctx.translate(atX(1), atY(1));
     const jr = Math.max(2, Math.round(Math.min(w, h) / 200));
     const jlw = Math.max(1.5, jr / 2.5);
     for (const e of G.edges) {
@@ -2845,10 +2875,10 @@ function graphTableCanvas(a, reach, sel) {
     cell.x0 === sel.cell.x0 && cell.y0 === sel.cell.y0 &&
     cell.x1 === sel.cell.x1 && cell.y1 === sel.cell.y1;
 
-  // BOTTOM: the table alone, on white — the structure with no scan behind it
+  // the table alone, on white — the structure with no scan behind it
   if (slot[2] >= 0) {
   ctx.save();
-  ctx.translate(0, at(2));
+  ctx.translate(atX(2), atY(2));
   for (const cell of R.table.cells) {
     const on = !sel || isSel(cell);
     ctx.globalAlpha = on ? 1 : 0.25;
@@ -2892,7 +2922,7 @@ function graphTableCanvas(a, reach, sel) {
     for (let pi = 0; pi < 3; pi++) {
       if (slot[pi] < 0) continue;
       ctx.save();
-      ctx.translate(0, at(pi));
+      ctx.translate(atX(pi), atY(pi));
       if (pi === 0) {
         // on the scan: a tint light enough to leave the content readable
         ctx.fillStyle = 'rgba(255,214,0,.16)';
@@ -2914,6 +2944,39 @@ function graphTableCanvas(a, reach, sel) {
       for (const p of (cell.pts || [])) {
         ctx.beginPath(); ctx.arc(p.x, p.y, r * 1.8, 0, Math.PI * 2); ctx.fill();
       }
+      ctx.restore();
+    }
+  }
+
+  // The hovered point, marked on every panel. Crosshairs rather than a dot, so
+  // it is findable at any zoom, and the cell under the cursor outlined with it
+  // — pointing at a spot in the crop shows which cell claims it and where the
+  // graph put its junctions.
+  if (zHover) {
+    const under = R.table.cells.find(cl =>
+      zHover.x >= cl.x0 && zHover.x <= cl.x1 && zHover.y >= cl.y0 && zHover.y <= cl.y1 &&
+      // the innermost cell containing the point, so a nested one wins
+      !cl.holes.some(o => zHover.x >= o.x0 && zHover.x <= o.x1 &&
+                          zHover.y >= o.y0 && zHover.y <= o.y1));
+    for (let pi = 0; pi < 3; pi++) {
+      if (slot[pi] < 0) continue;
+      ctx.save();
+      ctx.beginPath(); ctx.rect(atX(pi), atY(pi), w, h); ctx.clip();
+      ctx.translate(atX(pi), atY(pi));
+      if (under) {
+        ctx.fillStyle = 'rgba(255,193,7,.20)';
+        ctx.fillRect(under.x0, under.y0, under.x1 - under.x0, under.y1 - under.y0);
+        ctx.strokeStyle = '#f9a825'; ctx.lineWidth = lw * 2;
+        ctx.strokeRect(under.x0 + lw, under.y0 + lw,
+                       under.x1 - under.x0 - lw * 2, under.y1 - under.y0 - lw * 2);
+      }
+      ctx.strokeStyle = 'rgba(0,0,0,.45)'; ctx.lineWidth = 1;
+      ctx.setLineDash([4, 4]);
+      ctx.beginPath();
+      ctx.moveTo(0, zHover.y + .5); ctx.lineTo(w, zHover.y + .5);
+      ctx.moveTo(zHover.x + .5, 0); ctx.lineTo(zHover.x + .5, h);
+      ctx.stroke();
+      ctx.setLineDash([]);
       ctx.restore();
     }
   }
@@ -3210,7 +3273,8 @@ function joinCompareCanvas(a, sel) {
   c.width = w * 2 + gap; c.height = h;
   // tell the viewer this canvas is two panels, so the hover readout reports a
   // coordinate within a panel rather than the raw canvas offset
-  c.panelWidth = w; c.panelOffset = w + gap;
+  c.panelW = w; c.panelH = h; c.panelGap = gap;
+  c.panelPlaces = [{ panel: 0, cx: 0, cy: 0 }, { panel: 2, cx: 1, cy: 0 }];
   const ctx = c.getContext('2d');
   ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, c.width, c.height);
   ctx.fillStyle = '#e9ebef'; ctx.fillRect(w, 0, gap, h);
@@ -3777,8 +3841,9 @@ function openZoom(canvas, title, dims, redraw) {
   zCanvas = canvas;
   // a panelled canvas offers the panel toggles; anything else hides them
   zRedraw = redraw || null;
-  $('zpanels').hidden = !canvas.panelSlots;
-  if (canvas.panelSlots)
+  $('zpanels').hidden = !canvas.panelToggles;
+  // only the three-panel comparison offers the toggles
+  if (canvas.panelPlaces && canvas.panelPlaces.length >= 2 && canvas.panelToggles)
     for (const btn of $('zpanels').children)
       btn.classList.toggle('on', PANELS[+btn.dataset.panel]);
   // The title keeps the short summary; the numbers go in their own panel, where
@@ -3837,6 +3902,46 @@ function setZoom(z, anchor) {
   zScale = Math.max(0.05, Math.min(8, z));
   applyZoom(anchor);
 }
+// ---------------------------------------------------------------------------
+// Hovering a tiled canvas.
+//
+// A tiled view repeats the same crop in two or three panels. Pointing at a spot
+// in one should say where that spot is in the others, so the crop, the graph
+// and the cells can be read against each other without counting rows.
+// ---------------------------------------------------------------------------
+let zHover = null;                 // {x, y} in crop coordinates, or null
+let hoverPending = false;
+
+// canvas point -> which panel, and where inside it
+function canvasToPanel(canvas, x, y) {
+  const pw = canvas.panelW, ph = canvas.panelH, g = canvas.panelGap;
+  if (!pw || !canvas.panelPlaces) return null;
+  for (const pl of canvas.panelPlaces) {
+    const ox = pl.cx * (pw + g), oy = pl.cy * (ph + g);
+    if (x >= ox && x < ox + pw && y >= oy && y < oy + ph)
+      return { panel: pl.panel, x: x - ox, y: y - oy,
+               name: ['crop', 'graph', 'cells'][pl.panel] };
+  }
+  return null;                     // in a gutter
+}
+
+// Redraw at most once per frame. A hover fires on every pointer move, and the
+// canvas is rebuilt from scratch each time, so without this it would rebuild
+// far more often than the screen refreshes.
+function scheduleHoverDraw() {
+  if (hoverPending) return;
+  hoverPending = true;
+  requestAnimationFrame(() => {
+    hoverPending = false;
+    if (!zRedraw || $('zoom').hidden) return;
+    const body = $('zbody');
+    const keep = zScale, sl = body.scrollLeft, st = body.scrollTop;
+    zRedraw();
+    setZoom(keep);
+    body.scrollLeft = sl; body.scrollTop = st;
+  });
+}
+
 // Scroll the viewer so a cell is on screen, if it is not already. Called when a
 // row is picked, so choosing from the list is enough to see the thing chosen —
 // before this the viewport stayed where it was and the cell had to be hunted.
@@ -3847,24 +3952,24 @@ function revealCell(cell) {
   if (!zCanvas) return;
   const body = $('zbody');
   const k = (zCanvas.clientWidth || zCanvas.width) / zCanvas.width;
-  const stride = zCanvas.panelStride || 0;
-  const slots = zCanvas.panelSlots;
-  const panels = stride && slots
-    ? slots.filter(s => s >= 0).map(s => s * stride)
-    : [0];
+  const pw = zCanvas.panelW, ph = zCanvas.panelH, g = zCanvas.panelGap;
+  const places = zCanvas.panelPlaces || [{ cx: 0, cy: 0 }];
   const cx = (cell.x0 + cell.x1) / 2;
   const cyBase = (cell.y0 + cell.y1) / 2;
-  // the panel whose copy of this cell is closest to what is on screen now
-  const mid = body.scrollTop + body.clientHeight / 2;
-  let best = panels[0], bestD = Infinity;
-  for (const off of panels) {
-    const d = Math.abs((cyBase + off) * k - mid);
-    if (d < bestD) { bestD = d; best = off; }
+  // the tile whose copy of this cell is closest to what is on screen now, so a
+  // pick does not drag you from one panel to another
+  const midX = body.scrollLeft + body.clientWidth / 2;
+  const midY = body.scrollTop + body.clientHeight / 2;
+  let bx = 0, by = 0, bestD = Infinity;
+  for (const pl of places) {
+    const ox = pl.cx * (pw + g), oy = pl.cy * (ph + g);
+    const d = Math.hypot((cx + ox) * k - midX, (cyBase + oy) * k - midY);
+    if (d < bestD) { bestD = d; bx = ox; by = oy; }
   }
-  const px = cx * k, py = (cyBase + best) * k;
+  const px = (cx + bx) * k, py = (cyBase + by) * k;
   const m = 40;                                  // keep a margin off the edge
-  const x0 = cell.x0 * k - m, x1 = cell.x1 * k + m;
-  const y0 = (cell.y0 + best) * k - m, y1 = (cell.y1 + best) * k + m;
+  const x0 = (cell.x0 + bx) * k - m, x1 = (cell.x1 + bx) * k + m;
+  const y0 = (cell.y0 + by) * k - m, y1 = (cell.y1 + by) * k + m;
   // only move if the cell is not comfortably inside the viewport already
   if (x0 < body.scrollLeft || x1 > body.scrollLeft + body.clientWidth)
     body.scrollLeft = px - body.clientWidth / 2;
@@ -3881,7 +3986,7 @@ function zoomFit() {
   ));
 }
 function closeZoom() {
-  $('zoom').hidden = true; zCanvas = null; zRedraw = null;
+  $('zoom').hidden = true; zCanvas = null; zRedraw = null; zHover = null;
   $('zpanels').hidden = true;
 }
 
@@ -3938,24 +4043,20 @@ $('zpanels').addEventListener('click', e => {
       // A panelled canvas repeats the same crop, side by side or stacked;
       // report the coordinate within whichever panel the cursor is over rather
       // than the raw canvas offset.
-      const pw = zCanvas.panelWidth, ph = zCanvas.panelHeight;
-      if (ph) {
-        // stacked: which band, and is the cursor in a gutter between them.
-        // `panelSlots` maps panel -> position, so a hidden panel is skipped and
-        // the name still matches what is actually drawn there.
-        const stride = zCanvas.panelStride;
-        const band = Math.floor(y / stride), within = y - band * stride;
-        const slots = zCanvas.panelSlots || [0, 1, 2];
-        const which = slots.findIndex(s => s === band);
-        const name = ['crop', 'graph', 'cells'][which] || '';
-        $('zat').textContent = within < ph
-          ? `${x}, ${within}` + (name ? `  ${name}` : '') : '';
-      } else if (pw && x >= zCanvas.panelOffset) {
-        $('zat').textContent = `${x - zCanvas.panelOffset}, ${y}  ▸right`;
-      } else if (pw && x >= pw) {
-        $('zat').textContent = '';          // in the gutter between panels
+      // Which tile is the cursor over, and where inside it. `panelPlaces` maps
+      // each shown panel to its grid cell, so this works for any arrangement.
+      const hit = canvasToPanel(zCanvas, x, y);
+      if (hit) {
+        $('zat').textContent = `${hit.x}, ${hit.y}  ${hit.name}`;
+        // the same point in crop coordinates, highlighted on EVERY panel — so
+        // pointing at a cell on one shows you where it is on the others
+        if (zHover === null || zHover.x !== hit.x || zHover.y !== hit.y) {
+          zHover = { x: hit.x, y: hit.y };
+          if (zRedraw) scheduleHoverDraw();
+        }
       } else {
-        $('zat').textContent = `${x}, ${y}` + (pw ? '  ◂left' : '');
+        $('zat').textContent = '';
+        if (zHover) { zHover = null; if (zRedraw) scheduleHoverDraw(); }
       }
     }
     if (!from) return;
@@ -3963,7 +4064,10 @@ $('zpanels').addEventListener('click', e => {
     body.scrollLeft = from.l - (e.clientX - from.x);
     body.scrollTop = from.t - (e.clientY - from.y);
   });
-  body.addEventListener('pointerleave', () => { $('zat').textContent = ''; });
+  body.addEventListener('pointerleave', () => {
+    $('zat').textContent = '';
+    if (zHover) { zHover = null; if (zRedraw) scheduleHoverDraw(); }
+  });
   const end = () => { from = null; body.classList.remove('drag'); };
   body.addEventListener('pointerup', end);
   body.addEventListener('pointercancel', end);
